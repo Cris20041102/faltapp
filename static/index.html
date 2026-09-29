@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
+  <title>Faltapp</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/app.css">
+  <style>
+    dialog::backdrop { background: rgb(15 23 42 / .45); }
+    dialog[open] { animation: up .15s ease-out; }
+    @keyframes up { from { transform: translateY(12px); opacity: 0; } }
+    body { padding-bottom: env(safe-area-inset-bottom); }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-50 text-slate-800 antialiased">
+  <header class="sticky top-0 z-20 bg-indigo-600 text-white shadow">
+    <div class="mx-auto flex h-14 max-w-3xl items-center justify-between px-4">
+      <a href="#inicio" class="flex items-center gap-2 text-lg font-bold"><img src="/icon.svg" alt="" class="h-7 w-7"> Faltapp</a>
+      <div id="hdr" class="flex items-center gap-3 text-sm"></div>
+    </div>
+  </header>
+
+  <main id="view" class="mx-auto max-w-3xl px-4 pb-28 pt-5"></main>
+
+  <nav id="nav" class="fixed inset-x-0 bottom-0 z-20 hidden border-t border-slate-200 bg-white/95 backdrop-blur">
+    <div class="mx-auto grid max-w-3xl grid-cols-5 text-[11px] font-medium text-slate-500">
+      <a data-route="inicio" href="#inicio" class="flex flex-col items-center gap-0.5 py-2"><span class="text-xl">&#9678;</span>Inicio</a>
+      <a data-route="horario" href="#horario" class="flex flex-col items-center gap-0.5 py-2"><span class="text-xl">&#9638;</span>Horario</a>
+      <a data-route="amigos" href="#amigos" class="flex flex-col items-center gap-0.5 py-2"><span class="text-xl">&#9786;</span>Amigos</a>
+      <a data-route="propuestas" href="#propuestas" class="relative flex flex-col items-center gap-0.5 py-2"><span class="text-xl">&#9993;</span>Propuestas<span id="badge" class="absolute right-[22%] top-1 hidden min-w-[18px] rounded-full bg-red-500 px-1 text-center text-[10px] leading-[18px] text-white"></span></a>
+      <a data-route="agenda" href="#agenda" class="flex flex-col items-center gap-0.5 py-2"><span class="text-xl">&#9998;</span>Agenda</a>
+    </div>
+  </nav>
+
+  <dialog id="dlg" class="w-[min(94vw,28rem)] rounded-2xl p-0 shadow-xl"><div id="dlg-body"></div></dialog>
+  <div id="toast" class="pointer-events-none fixed inset-x-0 top-16 z-50 flex flex-col items-center gap-2 px-4"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

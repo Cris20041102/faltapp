@@ -1,0 +1,6 @@
+.superpowers/
+__pycache__/
+*.db
+.pytest_cache/
+e2e.png
+node_modules/
