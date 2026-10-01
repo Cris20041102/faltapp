@@ -175,7 +175,7 @@ async function inicio(v) {
   v.innerHTML = `
     <div class="flex items-end justify-between">
       <div><p class="muted">Semestre</p><h1 class="h1">${esc(sem.name)}</h1></div>
-      <a href="#semestre" class="text-sm font-medium text-indigo-600">Fechas y feriados</a>
+      <div class="flex flex-col items-end gap-1 text-sm font-medium text-indigo-600"><a href="#importar">Importar de Phoenix</a><a href="#semestre">Fechas y feriados</a></div>
     </div>
     ${s.courses.length ? `
       <section class="card mt-4">
@@ -679,8 +679,91 @@ async function agenda(v, arg) {
   $$("[data-del]", v).forEach((b) => (b.onclick = async () => { await api("DELETE", `/events/${b.dataset.del}`); render(); }));
 }
 
+// ---------- importar desde Phoenix (ULS) ----------
+const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php";
+
+// Corre DENTRO de Phoenix como marcador: lee las tablas (fecha + ✔/✖ por ramo y sección) y abre Faltapp
+// con los datos en el # (no viajan al servidor hasta confirmar). Sin comentarios // adentro: va en una URL.
+function phoenixGrab(origin) {
+  const rows = [];
+  let name = "", dates = [];
+  for (const tr of document.querySelectorAll("tr")) {
+    const tds = [...tr.children], first = tds[0]?.textContent.trim() || "";
+    if (tr.classList.contains("bg-primary")) name = first;
+    else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
+    else if (/^\[[TL]-\d+\]$/.test(first)) {
+      const pick = (sel) => dates.filter((d, i) => /^\d{4}-/.test(d) && tds[i]?.querySelector(sel));
+      rows.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check") });
+    }
+  }
+  if (!rows.length) return alert("Abre Asignaturas → Registro de Asistencia en Phoenix y vuelve a tocar el marcador.");
+  const url = origin + "/#importar/" + encodeURIComponent(JSON.stringify(rows));
+  open(url) || (location.href = url);
+}
+
+// "Progr. Avanzada" ≈ "Programación Avanzada": proporción de palabras donde una es el inicio de la otra
+const words = (s) => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().match(/[a-z0-9]+/g) || [];
+function similar(a, b) {
+  const x = words(a), y = words(b);
+  return x.filter((w) => y.some((z) => z.startsWith(w) || w.startsWith(z))).length / Math.max(x.length, y.length, 1);
+}
+
+function importHelp(v) {
+  const bm = "javascript:" + encodeURIComponent(`(${phoenixGrab})(${JSON.stringify(location.origin)})`);
+  v.innerHTML = `
+    <h1 class="h1">Importar desde Phoenix</h1>
+    <p class="muted">Trae tus faltas del registro oficial de la ULS en un toque, sin anotarlas a mano.</p>
+    <section class="card mt-4">
+      <h2 class="h2">1. Guarda el marcador (una sola vez)</h2>
+      <p class="mt-2 text-sm"><b>PC:</b> arrastra este botón a tu barra de marcadores.</p>
+      <a data-bm href="${esc(bm)}" class="btn-primary mt-2">⤓ Importar a Faltapp</a>
+      <p class="mt-4 text-sm"><b>Celular:</b> guarda cualquier página como marcador, edítalo, ponle de nombre <b>Faltapp</b> y en la dirección pega este código:</p>
+      <textarea readonly rows="2" class="input font-mono text-xs" aria-label="Código del marcador">${esc(bm)}</textarea>
+      <button data-copy class="btn mt-2">Copiar código</button>
+    </section>
+    <section class="card mt-4">
+      <h2 class="h2">2. Úsalo en Phoenix</h2>
+      <p class="mt-2 text-sm">Entra a Phoenix → <b>Asignaturas → Registro de Asistencia</b> y toca el marcador (en el celular: escribe <b>Faltapp</b> en la barra de direcciones y elige el marcador). Faltapp se abre con tus faltas para que las confirmes.</p>
+      <a href="${PHOENIX}" target="_blank" rel="noopener" class="btn mt-3 w-full">Abrir Phoenix</a>
+    </section>`;
+  $("[data-bm]", v).onclick = (e) => { e.preventDefault(); toast("Arrástralo a la barra de marcadores: se usa estando en Phoenix"); };
+  $("[data-copy]", v).onclick = async () => {
+    const t = $("textarea", v);
+    try { await navigator.clipboard.writeText(t.value); toast("Código copiado"); } catch { t.select(); toast("Mantén presionado el código para copiarlo", true); }
+  };
+}
+
+async function importar(v, arg) {
+  let rows = null;
+  try { rows = arg && JSON.parse(decodeURIComponent(arg)).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
+  if (!rows?.length) return importHelp(v);
+  const sem = await activeSemester();
+  if (!sem) { location.hash = "#semestre"; return; }
+  const { courses } = await api("GET", `/semesters/${sem.id}`);
+  const best = (r) => courses.filter((c) => c.kind === r.section[1]).map((c) => [similar(c.name, r.name), c]).sort((a, b) => b[0] - a[0]).find(([n]) => n > 0.5)?.[1];
+  v.innerHTML = `
+    <h1 class="h1">Importar desde Phoenix</h1>
+    <p class="muted">Revisa a qué ramo corresponde cada uno. En los días que Phoenix ya registró, manda Phoenix.</p>
+    <ul class="card mt-4 divide-y divide-slate-100 !py-0">${rows.map((r, i) => `
+      <li class="py-3">
+        <div class="font-medium leading-tight">${esc(r.name)} <span class="text-xs text-slate-500">${esc(r.section)}</span></div>
+        <div class="text-xs ${r.absent.length ? "text-red-600" : "text-slate-500"}">${r.absent.length ? `Faltas: ${esc(r.absent.map(shortDate).join(", "))}` : "Sin faltas"} · ${r.present.length} asistencia${r.present.length === 1 ? "" : "s"}</div>
+        <select class="input" data-row="${i}" aria-label="${esc(r.name)} ${esc(r.section)}"><option value="">No importar</option>${courses.map((c) => `
+          <option value="${c.id}" ${best(r)?.id === c.id ? "selected" : ""}>${esc(c.name)} (${c.kind === "L" ? "Lab" : "Teoría"})</option>`).join("")}</select>
+      </li>`).join("")}</ul>
+    <button data-import class="btn-primary mt-4 w-full">Importar</button>`;
+  $("[data-import]", v).onclick = async () => {
+    const items = $$("select[data-row]", v).filter((s) => s.value).map((s) => ({ course_id: Number(s.value), absent: rows[s.dataset.row].absent, present: rows[s.dataset.row].present }));
+    if (!items.length) { toast("Elige al menos un ramo", true); return; }
+    const r = await api("POST", "/absences/import", { items });
+    toast(`Listo: ${r.added} falta${r.added === 1 ? "" : "s"} nueva${r.added === 1 ? "" : "s"}${r.removed ? `, ${r.removed} corregida${r.removed === 1 ? "" : "s"}` : ""}`);
+    if (r.skipped.length) toast(`No calzan con tu horario (¿clase recuperativa?): ${r.skipped.map((x) => `${x.course} ${shortDate(x.date)}`).join(", ")}`, true);
+    location.hash = "#inicio";
+  };
+}
+
 // ---------- router ----------
-const routes = { login, inicio, horario, semestre, perfil, amigos, propuestas, agenda };
+const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda };
 async function render() {
   const [name, arg] = location.hash.slice(1).split("/");
   const route = routes[name] ? name : token ? "inicio" : "login";

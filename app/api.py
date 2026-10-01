@@ -463,6 +463,41 @@ def remove_absences(body: AbsenceIn, user: User = Depends(current_user), db: Ses
     return Response(status_code=204)
 
 
+class ImportItem(BaseModel):
+    course_id: int
+    absent: list[date] = Field([], max_length=300)
+    present: list[date] = Field([], max_length=300)
+
+
+class ImportIn(BaseModel):
+    items: list[ImportItem] = Field(max_length=50)
+
+
+@router.post("/absences/import")
+def import_absences(body: ImportIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Registro oficial (Phoenix): en los días que trae, manda sobre lo marcado a mano."""
+    added = removed = 0
+    skipped = []
+    for it in body.items:
+        c = get_owned(db, Course, it.course_id, user)
+        s = db.get(Semester, c.semester_id)
+        off = {x.date for x in s.no_class_days}
+        for d, absent in [(d, True) for d in it.absent] + [(d, False) for d in it.present]:
+            slots = [x for x in c.slots if x.weekday == d.weekday()] if s.start_date <= d <= s.end_date and d not in off else []
+            if not slots and absent:
+                skipped.append({"course": c.name, "date": d.isoformat()})  # ej: clase recuperativa en otro día
+            for x in slots:
+                have = db.scalar(select(Absence).where(Absence.slot_id == x.id, Absence.date == d))
+                if absent and not have:
+                    db.add(Absence(slot_id=x.id, date=d))
+                    added += 1
+                elif not absent and have:
+                    db.delete(have)
+                    removed += 1
+    db.commit()
+    return {"added": added, "removed": removed, "skipped": skipped}
+
+
 @router.get("/semesters/{id}/summary")
 def summary(id: int, today: date = Depends(today_param), user: User = Depends(current_user), db: Session = Depends(get_db)):
     s = get_owned(db, Semester, id, user)

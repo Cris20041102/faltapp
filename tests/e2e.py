@@ -1,5 +1,6 @@
 """E2E con Playwright. Uso: python tests/e2e.py  (no lo corre pytest)."""
 import base64
+import urllib.parse
 import os
 import subprocess
 import sys
@@ -59,16 +60,16 @@ def main():
                 page.get_by_role("button", name="¿Seguro?").click()
             expect(page.locator("[data-slot]")).to_have_count(0)
             page.get_by_role("button", name="Agregar clase el Miércoles").click()
-            page.get_by_label("Nombre del ramo").fill("BD Lab")
+            page.get_by_label("Nombre del ramo").fill("Bases de Datos")
             page.get_by_label("Tipo").select_option("L")
             expect(page.get_by_label("% mínimo")).to_have_value("70")
             page.get_by_label("Desde").fill("09:45")
             page.get_by_label("Hasta").fill("11:15")
             page.get_by_role("button", name="Guardar").click()
-            expect(page.get_by_text("BD Lab").first).to_be_visible()
+            expect(page.get_by_text("Bases de Datos").first).to_be_visible()
 
             page.goto(URL + "/#inicio")
-            card = page.locator("[data-course]").filter(has_text="BD Lab")
+            card = page.locator("[data-course]").filter(has_text="Bases de Datos")
             expect(card.locator("[data-quedan]")).to_have_text("4")
             day = page.locator('[data-date="2026-10-07"]')
             for _ in range(12):  # navegar hasta octubre, venga de donde venga "hoy"
@@ -91,6 +92,22 @@ def main():
             png.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="))
             page.get_by_label("Cambiar foto").set_input_files(str(png))
             expect(page.locator("#hdr img")).to_be_visible()
+
+            # importar desde Phoenix con el marcador; en los días que Phoenix registró, manda Phoenix
+            page.goto(URL + "/#importar")
+            href = page.locator("[data-bm]").get_attribute("href")
+            page.goto((ROOT / "tests" / "fixtures" / "phoenix_demo.html").as_uri())
+            with page.expect_popup() as pop:
+                page.evaluate(urllib.parse.unquote(href.removeprefix("javascript:")))
+            imp = pop.value
+            imp.on("pageerror", lambda e: errors.append(str(e)))
+            expect(imp.get_by_label("Bases de Datos I [L-1]").locator("option:checked")).to_have_text("Bases de Datos (Lab)")
+            expect(imp.get_by_label("Bases de Datos I [T-1]").locator("option:checked")).to_have_text("No importar")
+            expect(imp.get_by_label("Ciberseguridad Avanzada [L-1]").locator("option:checked")).to_have_text("No importar")
+            imp.get_by_role("button", name="Importar").click()
+            imp.wait_for_url("**/#inicio")
+            expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
+            imp.close()
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
             page.goto(URL + "/#inicio")
