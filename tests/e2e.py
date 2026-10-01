@@ -49,6 +49,14 @@ def main():
             expect(page.get_by_text("Receso Fiestas Patrias")).to_have_count(4)  # 14 al 17/09
 
             page.goto(URL + "/#horario")
+            page.get_by_label("Subir PDF de horario ULS").set_input_files(str(ROOT / "tests" / "fixtures" / "horario_uls_demo.pdf"))
+            expect(page.get_by_text("Progr. Avanzada").first).to_be_visible()
+            expect(page.locator("[data-slot]")).to_have_count(5)  # 4 ramos, Eva. de Proyec. con 2 bloques
+            for _ in range(4):  # se borran para seguir con un horario conocido
+                page.locator("[data-slot]").first.click()
+                page.get_by_role("button", name="Eliminar el ramo completo").click()
+                page.get_by_role("button", name="¿Seguro?").click()
+            expect(page.locator("[data-slot]")).to_have_count(0)
             page.get_by_role("button", name="Agregar clase el Miércoles").click()
             page.get_by_label("Nombre del ramo").fill("BD Lab")
             page.get_by_label("Tipo").select_option("L")

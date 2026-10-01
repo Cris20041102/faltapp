@@ -51,8 +51,8 @@ function toast(msg, bad = false) {
 async function api(method, path, body, { quiet = false } = {}) {
   const r = await fetch("/api" + path, {
     method,
-    headers: { "Content-Type": "application/json", ...(token ? { Authorization: "Bearer " + token } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
+    headers: { ...(body instanceof Blob ? {} : { "Content-Type": "application/json" }), ...(token ? { Authorization: "Bearer " + token } : {}) },
+    body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined,
   });
   if (r.status === 401 && !path.startsWith("/auth")) { logout(); throw new Error("Sesión expirada"); }
   if (r.status === 204) return null;
@@ -246,6 +246,11 @@ async function horario(v) {
   v.innerHTML = `
     <h1 class="h1">Horario</h1>
     <p class="muted">Toca + para agregar una clase, o una clase para editarla. Teoría y laboratorio van como ramos separados.</p>
+    <label class="card mt-4 flex cursor-pointer items-center gap-3 border-dashed">
+      <span class="flex-1"><span class="font-medium">¿Eres de la ULS?</span><span class="block text-sm text-slate-500">Sube el PDF de tu horario y se cargan solos tus ramos.</span></span>
+      <span class="btn-primary shrink-0">Subir PDF</span>
+      <input type="file" accept="application/pdf" class="sr-only" aria-label="Subir PDF de horario ULS" data-pdf>
+    </label>
     <div class="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">${DAYS.map((d, w) => `
       <section class="card !p-3">
         <div class="flex items-center justify-between">
@@ -261,6 +266,13 @@ async function horario(v) {
         </ul>
       </section>`).join("")}
     </div>`;
+  $("[data-pdf]", v).onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const r = await api("POST", `/semesters/${full.id}/import-uls`, file);
+    toast(r.created ? `${r.created} ramo${r.created > 1 ? "s" : ""} cargado${r.created > 1 ? "s" : ""}. Revisa el % mínimo de cada uno.` : "Esos ramos ya estaban cargados");
+    render();
+  };
   $$("[data-add]", v).forEach((b) => (b.onclick = () => slotDialog(full, Number(b.dataset.add))));
   $$("[data-slot]", v).forEach((b) => (b.onclick = () => {
     const course = full.courses.find((c) => c.slots.some((x) => x.id === Number(b.dataset.slot)));

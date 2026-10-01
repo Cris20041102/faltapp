@@ -6,3 +6,4 @@ psycopg[binary]
 pyjwt
 httpx
 pytest
+pdfminer.six

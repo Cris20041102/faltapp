@@ -5,13 +5,15 @@ from datetime import date, time
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.auth import current_user, hash_password, make_token, verify_password
+from app.horario_uls import parse as parse_horario_uls
 from app import calc
 from app.db import get_db
 from app.models import Absence, Course, Event, Friendship, NoClassDay, Proposal, ProposalMember, Semester, Slot, User
@@ -244,6 +246,23 @@ def create_course(id: int, body: CourseIn, user: User = Depends(current_user), d
     db.add(c)
     db.commit()
     return course_out(c)
+
+
+@router.post("/semesters/{id}/import-uls")
+async def import_uls(id: int, request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    s = get_owned(db, Semester, id, user)
+    pdf = await request.body()
+    found = await run_in_threadpool(parse_horario_uls, pdf) if len(pdf) <= 2_000_000 else []
+    if not found:
+        raise HTTPException(400, "No pude leer el horario. Sube el PDF de horario que entrega la ULS.")
+    have = {(c.name, c.kind) for c in s.courses}
+    new = [c for c in found if (c["name"], c["kind"]) not in have]
+    for c in new:
+        s.courses.append(Course(name=c["name"], kind=c["kind"], min_pct=70 if c["kind"] == "L" else 60, slots=[
+            Slot(weekday=x["weekday"], start_time=time.fromisoformat(x["start_time"]), end_time=time.fromisoformat(x["end_time"]))
+            for x in c["slots"]]))
+    db.commit()
+    return {"created": len(new), "skipped": len(found) - len(new)}
 
 
 @router.patch("/courses/{id}")
