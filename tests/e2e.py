@@ -95,6 +95,16 @@ def main():
 
             # importar desde Phoenix con el marcador; en los días que Phoenix registró, manda Phoenix
             page.goto(URL + "/#importar")
+            expect(page.get_by_role("button", name="PC")).to_have_attribute("aria-pressed", "true")  # Linux = PC
+            page.get_by_role("button", name="iPhone").click()
+            expect(page.locator("[data-guide=iphone]").get_by_text("Agregar marcador")).to_be_visible()
+            expect(page.locator("[data-bm]")).to_be_hidden()
+            iphone = b.new_context(user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1").new_page()
+            iphone.goto(URL)
+            iphone.evaluate("t => localStorage.setItem('token', t)", page.evaluate("localStorage.getItem('token')"))
+            iphone.goto(URL + "/?r=1#importar")
+            expect(iphone.get_by_role("button", name="iPhone")).to_have_attribute("aria-pressed", "true")
+            iphone.close()
             href = page.locator("[data-bm]").get_attribute("href")
             page.goto((ROOT / "tests" / "fixtures" / "phoenix_demo.html").as_uri())
             with page.expect_popup() as pop:

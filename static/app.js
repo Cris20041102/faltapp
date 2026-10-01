@@ -731,29 +731,78 @@ function similar(a, b) {
   return x.filter((w) => y.some((z) => z.startsWith(w) || w.startsWith(z))).length / Math.max(x.length, y.length, 1);
 }
 
+const DEVICE = /iPhone|iPad|iPod/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1) ? "iphone"
+  : /Android/.test(navigator.userAgent) ? "android" : "pc";
+const step = (n, html) => `<li class="flex gap-3"><span class="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-indigo-600 text-sm font-bold text-white">${n}</span><div class="pt-0.5 text-sm leading-relaxed">${html}</div></li>`;
+const steps = (title, list) => `<h3 class="mt-5 font-semibold text-slate-900">${title}</h3><ol class="mt-3 space-y-4">${list.map((h, i) => step(i + 1, h)).join("")}</ol>`;
+const COPY = `<button data-copy class="btn-primary mt-2">Copiar código</button>`;
+const GO_PHOENIX = `<a href="${PHOENIX}" target="_blank" rel="noopener" class="btn mt-2">Abrir Phoenix</a>`;
+const IN_PHOENIX = "Entra a Phoenix con tu cuenta y ve a <b>Asignaturas → Registro de Asistencia</b>.";
+const CONFIRM = "Se abre Faltapp con tus faltas. Revisa que cada ramo esté bien elegido y toca <b>Importar</b>. ¡Listo!";
+
 function importHelp(v) {
   const bm = "javascript:" + encodeURIComponent(`(${phoenixGrab})(${JSON.stringify(location.origin)})`);
+  const guides = {
+    pc: steps("Primera vez: guarda el botón", [
+      "Muestra la barra de marcadores de tu navegador: presiona <b>Ctrl + Shift + B</b> (en Mac: <b>Cmd + Shift + B</b>). Aparece una barra debajo de la dirección.",
+      `Mantén apretado este botón con el mouse, arrástralo hasta esa barra y suéltalo ahí:<br><a data-bm href="${esc(bm)}" class="btn-primary mt-2">⤓ Importar a Faltapp</a>
+      <p class="mt-3 text-xs text-slate-500">¿No te deja arrastrarlo? Haz clic derecho en la barra → <b>Agregar página</b> (o <b>Agregar marcador</b>). Como nombre escribe <b>Faltapp</b> y en la dirección (URL) pega el código que copias aquí:</p>${COPY}`,
+    ]) + steps("Cada vez que quieras actualizar tus faltas", [
+      `${IN_PHOENIX}<br>${GO_PHOENIX}`,
+      "Haz clic en <b>Importar a Faltapp</b> en la barra de marcadores.",
+      CONFIRM,
+    ]),
+    android: steps("Primera vez: guarda el botón (en Chrome)", [
+      `Toca este botón para copiar el código:<br>${COPY}`,
+      "En Chrome toca los <b>tres puntos ⋮</b> (arriba a la derecha) y luego la <b>estrella ☆</b>. Abajo aparece el aviso “Se agregó a favoritos”: toca <b>Editar</b>.<br><span class=\"text-xs text-slate-500\">Si el aviso se fue: ⋮ → Favoritos → toca ⋮ al lado del favorito → Editar.</span>",
+      "En <b>Nombre</b> escribe <b>Faltapp</b>. En <b>URL</b> borra todo, mantén el dedo presionado y toca <b>Pegar</b>. Vuelve atrás con la flecha ←: se guarda solo.",
+    ]) + steps("Cada vez que quieras actualizar tus faltas", [
+      `En Chrome, ${IN_PHOENIX.charAt(0).toLowerCase() + IN_PHOENIX.slice(1)}<br>${GO_PHOENIX}`,
+      "Toca la barra de direcciones (donde va la página web), escribe <b>Faltapp</b> y toca el favorito con la estrella ☆ que aparece en la lista.<br><span class=\"text-xs text-slate-500\">Ojo: tiene que ser escribiéndolo en la barra. Si lo abres desde la lista de favoritos no funciona.</span>",
+      CONFIRM,
+    ]),
+    iphone: steps("Primera vez: guarda el botón (en Safari)", [
+      `Toca este botón para copiar el código:<br>${COPY}`,
+      "Toca el botón <b>Compartir</b> (el cuadrado con una flecha hacia arriba) → <b>Agregar marcador</b> → <b>Guardar</b>.",
+      "Toca el ícono de <b>marcadores</b> (el libro abierto) → <b>Editar</b> (abajo a la derecha) → toca el marcador que acabas de guardar.",
+      "Cambia el nombre por <b>Faltapp</b>. Toca la dirección de abajo, bórrala completa, mantén el dedo presionado y toca <b>Pegar</b>. Toca <b>OK</b>.",
+    ]) + steps("Cada vez que quieras actualizar tus faltas", [
+      `En Safari, ${IN_PHOENIX.charAt(0).toLowerCase() + IN_PHOENIX.slice(1)}<br>${GO_PHOENIX}`,
+      "Toca la barra de direcciones (donde va la página web), escribe <b>Faltapp</b> y toca el marcador que aparece en la lista.",
+      CONFIRM,
+    ]),
+  };
+  const tabs = { pc: "PC", android: "Android", iphone: "iPhone" };
   v.innerHTML = `
     <h1 class="h1">Importar desde Phoenix</h1>
-    <p class="muted">Trae tus faltas del registro oficial de la ULS en un toque, sin anotarlas a mano.</p>
+    <p class="muted">Trae tus faltas del registro oficial de la ULS sin anotarlas una por una. La primera vez guardas un botón en tu navegador (toma 1 minuto) y después basta con tocarlo estando en Phoenix.</p>
     <section class="card mt-4">
-      <h2 class="h2">1. Guarda el marcador (una sola vez)</h2>
-      <p class="mt-2 text-sm"><b>PC:</b> arrastra este botón a tu barra de marcadores.</p>
-      <a data-bm href="${esc(bm)}" class="btn-primary mt-2">⤓ Importar a Faltapp</a>
-      <p class="mt-4 text-sm"><b>Celular:</b> guarda cualquier página como marcador, edítalo, ponle de nombre <b>Faltapp</b> y en la dirección pega este código:</p>
-      <textarea readonly rows="2" class="input font-mono text-xs" aria-label="Código del marcador">${esc(bm)}</textarea>
-      <button data-copy class="btn mt-2">Copiar código</button>
+      <p class="text-sm font-medium text-slate-600">¿Desde dónde lo vas a usar?</p>
+      <div class="mt-2 grid grid-cols-3 gap-2">${Object.entries(tabs).map(([k, n]) => `
+        <button data-dev="${k}" aria-pressed="${k === DEVICE}" class="btn aria-pressed:border-indigo-600 aria-pressed:bg-indigo-50 aria-pressed:text-indigo-700">${n}</button>`).join("")}</div>
+      ${Object.entries(guides).map(([k, html]) => `<div data-guide="${k}" class="${k === DEVICE ? "" : "hidden"}">${html}</div>`).join("")}
     </section>
-    <section class="card mt-4">
-      <h2 class="h2">2. Úsalo en Phoenix</h2>
-      <p class="mt-2 text-sm">Entra a Phoenix → <b>Asignaturas → Registro de Asistencia</b> y toca el marcador (en el celular: escribe <b>Faltapp</b> en la barra de direcciones y elige el marcador). Faltapp se abre con tus faltas para que las confirmes.</p>
-      <a href="${PHOENIX}" target="_blank" rel="noopener" class="btn mt-3 w-full">Abrir Phoenix</a>
-    </section>`;
+    <details class="card mt-4">
+      <summary class="cursor-pointer font-semibold">¿No funciona?</summary>
+      <ul class="mt-3 list-disc space-y-2 pl-5 text-sm">
+        <li>Tócalo estando en la página de <b>Registro de Asistencia</b> de Phoenix, con tu sesión iniciada.</li>
+        <li>Si no pasa nada, el código no quedó pegado completo: repite el paso de pegar. Debe empezar con <b>javascript:</b></li>
+        <li>En celular usa <b>Chrome</b> (Android) o <b>Safari</b> (iPhone). En otros navegadores puede no funcionar.</li>
+        <li>Si Faltapp cambió de dirección, borra el botón y guárdalo de nuevo.</li>
+      </ul>
+      <label class="field mt-3">Código del botón (por si el botón Copiar no funciona)<textarea readonly rows="3" class="input font-mono text-xs">${esc(bm)}</textarea></label>
+    </details>
+    <p class="muted mt-4 text-center">¿Prefieres no hacerlo? En <a href="#inicio" class="font-medium text-indigo-600">Inicio</a> marcas tus faltas con un toque.</p>`;
+  $$("[data-dev]", v).forEach((b) => (b.onclick = () => {
+    $$("[data-dev]", v).forEach((x) => x.setAttribute("aria-pressed", x === b));
+    $$("[data-guide]", v).forEach((g) => g.classList.toggle("hidden", g.dataset.guide !== b.dataset.dev));
+  }));
   $("[data-bm]", v).onclick = (e) => { e.preventDefault(); toast("Arrástralo a la barra de marcadores: se usa estando en Phoenix"); };
-  $("[data-copy]", v).onclick = async () => {
-    const t = $("textarea", v);
-    try { await navigator.clipboard.writeText(t.value); toast("Código copiado"); } catch { t.select(); toast("Mantén presionado el código para copiarlo", true); }
-  };
+  $$("[data-copy]", v).forEach((b) => (b.onclick = async () => {
+    try { await navigator.clipboard.writeText(bm); toast("Código copiado ✓"); } catch {
+      $("details", v).open = true; $("textarea", v).select(); toast("No se pudo copiar: mantén presionado el código de abajo y cópialo", true);
+    }
+  }));
 }
 
 async function importar(v, arg) {
