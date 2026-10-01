@@ -1,4 +1,5 @@
 """E2E con Playwright. Uso: python tests/e2e.py  (no lo corre pytest)."""
+import base64
 import os
 import subprocess
 import sys
@@ -79,7 +80,20 @@ def main():
             expect(card.locator("[data-quedan]")).to_have_text("3")
             page.screenshot(path=str(ROOT / "e2e.png"), full_page=True)
 
+            # perfil: estado, descripción, color, foto
+            page.locator("#hdr a").click()
+            page.get_by_label("Estado").fill("Probando Faltapp")
+            page.get_by_label("Descripción").fill("Hola, soy de prueba")
+            page.get_by_label("Color #16a34a").check()
+            page.get_by_role("button", name="Guardar perfil").click()
+            expect(page.locator("[data-card]").get_by_text("Probando Faltapp")).to_be_visible()
+            png = Path(tempfile.mkdtemp()) / "yo.png"
+            png.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="))
+            page.get_by_label("Cambiar foto").set_input_files(str(png))
+            expect(page.locator("#hdr img")).to_be_visible()
+
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
+            page.goto(URL + "/#inicio")
             day.click()
             page.evaluate("location.hash = '#agenda'")
             expect(page.locator("#dlg")).not_to_have_attribute("open", "")

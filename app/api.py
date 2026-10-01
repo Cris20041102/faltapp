@@ -1,14 +1,14 @@
 import datetime as dt
 import os
 import re
-from datetime import date, time
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
-from sqlalchemy import delete, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -22,7 +22,40 @@ router = APIRouter(prefix="/api")
 
 
 def user_out(u: User) -> dict:
-    return {"id": u.id, "username": u.username, "display_name": u.display_name}
+    avatar = f"/api/users/{u.id}/avatar?v={u.avatar_version}" if u.avatar_type else None
+    return {"id": u.id, "username": u.username, "display_name": u.display_name, "avatar_url": avatar}
+
+
+def profile_out(u: User) -> dict:
+    return user_out(u) | {"bio": u.bio, "career": u.career, "year": u.year, "status": u.status, "banner_color": u.banner_color}
+
+
+def now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def next_change(changed_at: datetime | None, days: int) -> datetime | None:
+    """Fecha desde la que se puede volver a cambiar, o None si ya se puede."""
+    if not changed_at:
+        return None
+    t = (changed_at if changed_at.tzinfo else changed_at.replace(tzinfo=timezone.utc)) + timedelta(days=days)
+    return t if t > now() else None
+
+
+USERNAME_DAYS, NAME_DAYS = 30, 14
+
+
+def me_out(u: User) -> dict:
+    nxt = lambda at, days: (n := next_change(at, days)) and n.isoformat()
+    return profile_out(u) | {"username_next_change": nxt(u.username_changed_at, USERNAME_DAYS),
+                             "display_name_next_change": nxt(u.display_name_changed_at, NAME_DAYS)}
+
+
+def check_username(v: str) -> str:
+    v = v.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_.]{3,30}", v):
+        raise ValueError("El usuario debe tener de 3 a 30 caracteres: letras, números, punto o guion bajo")
+    return v
 
 
 # ---------- auth ----------
@@ -42,9 +75,7 @@ class Register(Credentials):
     @field_validator("username")
     @classmethod
     def _username(cls, v: str) -> str:
-        if not re.fullmatch(r"[a-z0-9_.]{3,30}", v):
-            raise ValueError("El usuario debe tener de 3 a 30 caracteres: letras, números, punto o guion bajo")
-        return v
+        return check_username(v)
 
     @field_validator("password")
     @classmethod
@@ -74,7 +105,92 @@ def login(body: Credentials, db: Session = Depends(get_db)):
 
 @router.get("/me")
 def me(user: User = Depends(current_user)):
-    return user_out(user)
+    return me_out(user)
+
+
+# ---------- perfil ----------
+class ProfilePatch(BaseModel):
+    display_name: str | None = Field(None, min_length=1, max_length=60)
+    username: str | None = None
+    bio: str | None = Field(None, max_length=160)
+    career: str | None = Field(None, max_length=60)
+    year: int | None = Field(None, ge=1, le=7)
+    status: str | None = Field(None, max_length=60)
+    banner_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+    @field_validator("username")
+    @classmethod
+    def _username(cls, v: str | None) -> str | None:
+        return v if v is None else check_username(v)
+
+
+@router.patch("/me")
+def patch_me(body: ProfilePatch, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    data = body.model_dump(exclude_unset=True)
+    if "display_name" in data:
+        data["display_name"] = data["display_name"].strip()
+    for field, days, label in (("username", USERNAME_DAYS, "tu @"), ("display_name", NAME_DAYS, "tu nombre")):
+        if field not in data:
+            continue
+        if data[field] == getattr(user, field):
+            data.pop(field)
+            continue
+        if nxt := next_change(getattr(user, f"{field}_changed_at"), days):
+            raise HTTPException(400, f"Podrás cambiar {label} el {nxt:%d/%m}")
+        setattr(user, f"{field}_changed_at", now())
+    if "username" in data and db.scalar(select(User.id).where(User.username == data["username"], User.id != user.id)):
+        raise HTTPException(409, "Ese usuario ya existe")
+    for k, v in data.items():
+        setattr(user, k, v)
+    db.commit()
+    return me_out(user)
+
+
+AVATAR_MAX = 2_000_000
+
+
+def image_type(b: bytes) -> str | None:
+    if b.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if b.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if b[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if b[:4] == b"RIFF" and b[8:12] == b"WEBP":
+        return "image/webp"
+    return None  # SVG y otros formatos no: podrían traer scripts
+
+
+@router.put("/me/avatar")
+async def put_avatar(request: Request, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if int(request.headers.get("content-length") or 0) > AVATAR_MAX:
+        raise HTTPException(413, "La imagen pesa más de 2 MB")
+    data = await request.body()
+    if len(data) > AVATAR_MAX:
+        raise HTTPException(413, "La imagen pesa más de 2 MB")
+    if not (kind := image_type(data)):
+        raise HTTPException(400, "Sube una imagen PNG, JPG, WEBP o GIF")
+    user.avatar, user.avatar_type, user.avatar_version = data, kind, user.avatar_version + 1
+    db.commit()
+    return me_out(user)
+
+
+@router.delete("/me/avatar", status_code=204)
+def delete_avatar(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    user.avatar, user.avatar_type, user.avatar_version = None, None, user.avatar_version + 1
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.get("/users/{id}/avatar")
+def get_avatar(id: int, db: Session = Depends(get_db)):  # pública: las etiquetas <img> no mandan token
+    u = db.get(User, id)
+    if not u or not u.avatar_type:
+        raise HTTPException(404, "No encontrado")
+    return Response(u.avatar, media_type=u.avatar_type,
+                    headers={"Cache-Control": "public, max-age=31536000, immutable", "X-Content-Type-Options": "nosniff"})
+
+
 
 
 # ---------- helpers ----------
@@ -556,3 +672,41 @@ def delete_event(id: int, user: User = Depends(current_user), db: Session = Depe
     db.delete(get_owned(db, Event, id, user))
     db.commit()
     return Response(status_code=204)
+
+
+# ---------- perfil público e insignias ----------
+def friend_ids(db: Session, uid: int) -> set[int]:
+    rows = db.execute(select(Friendship.requester_id, Friendship.addressee_id).where(
+        Friendship.status == "accepted", or_(Friendship.requester_id == uid, Friendship.addressee_id == uid)))
+    return {b if a == uid else a for a, b in rows}
+
+
+def badges(db: Session, u: User, today: date) -> list[dict]:
+    got = []
+    if u.id <= 20:
+        got.append(("fundador", "🚀", "Fundador", "De los primeros 20 en Faltapp"))
+    if len(friend_ids(db, u.id)) >= 5:
+        got.append(("sociable", "🤝", "Sociable", "5 amigos o más"))
+    s = active_semester(db, u)
+    if s and s.courses:
+        stats = calc.summarize(load_plan(db, s), today)["courses"]
+        if today > s.start_date and all(c["reales"] == 0 for c in stats):
+            got.append(("perfecta", "⭐", "Asistencia perfecta", "Ninguna falta este semestre"))
+        if all(c["quedan"] > 0 for c in stats):
+            got.append(("verde", "🟢", "Todo en verde", "Todavía puede faltar en todos sus ramos"))
+        if len(s.events) >= 3:
+            got.append(("planificador", "📅", "Planificador", "3 o más pruebas o entregas anotadas"))
+    if db.scalar(select(func.count()).select_from(ProposalMember).join(Proposal).where(
+            Proposal.creator_id == u.id, ProposalMember.user_id != u.id, ProposalMember.status == "accepted")):
+        got.append(("organizador", "🎉", "Organizador", "Alguien se sumó a una de sus propuestas"))
+    return [{"id": i, "emoji": e, "label": label, "desc": d} for i, e, label, d in got]
+
+
+@router.get("/users/{id}/profile")
+def user_profile(id: int, today: date = Depends(today_param), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    u = db.get(User, id)
+    if not u:
+        raise HTTPException(404, "No encontrado")
+    mine, theirs = friend_ids(db, user.id), friend_ids(db, u.id)
+    return profile_out(u) | {"friends": len(theirs), "mutual": len(mine & theirs) if u.id != user.id else 0,
+                             "is_friend": u.id in mine, "badges": badges(db, u, today)}

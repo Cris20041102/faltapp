@@ -385,8 +385,7 @@ async function semestre(v) {
     ${list.length > 1 ? `<section class="card mt-4"><h2 class="h2">Otros semestres</h2><ul class="mt-2 divide-y divide-slate-100">${list.filter((s) => !s.active).map((s) => `
       <li class="flex items-center justify-between gap-2 py-2 text-sm"><span>${esc(s.name)}</span><span class="flex gap-2">
       <button data-activate="${s.id}" class="btn">Activar</button><button data-del-sem="${s.id}" class="btn-danger">Eliminar</button></span></li>`).join("")}</ul></section>` : ""}
-    <details class="card mt-4"><summary class="cursor-pointer font-semibold">Nuevo semestre</summary><div class="mt-3">${newForm}</div></details>
-    <button data-logout class="mt-6 w-full text-center text-sm text-slate-500">Cerrar sesión</button>` : `
+    <details class="card mt-4"><summary class="cursor-pointer font-semibold">Nuevo semestre</summary><div class="mt-3">${newForm}</div></details>` : `
     <h1 class="h1">Crea tu semestre</h1>
     <p class="muted">Con las fechas y el país calculamos cuántas clases tendrás y cargamos los feriados.</p>
     <section class="card mt-4">${newForm}</section>`;
@@ -429,15 +428,107 @@ async function semestre(v) {
     if (!b.dataset.sure) { b.dataset.sure = 1; b.textContent = "¿Seguro?"; return; }
     await api("DELETE", `/semesters/${b.dataset.delSem}`); render();
   }));
-  const lo = $("[data-logout]", v);
-  if (lo) lo.onclick = logout;
+}
+
+// ---------- perfil ----------
+const AV = { sm: "h-7 w-7 text-xs", md: "h-10 w-10 text-base", lg: "h-24 w-24 text-3xl ring-4 ring-white" };
+const avatar = (u, size = "md") => u.avatar_url
+  ? `<img src="${esc(u.avatar_url)}" alt="" class="${AV[size]} shrink-0 rounded-full bg-white object-cover">`
+  : `<span class="grid ${AV[size]} shrink-0 place-items-center rounded-full bg-indigo-100 font-bold text-indigo-700">${esc(u.display_name[0]?.toUpperCase())}</span>`;
+const BANNERS = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#db2777", "#7c3aed", "#334155"];
+
+const profileCardHtml = (p) => `
+  <div data-card>
+    <div class="h-20" style="background:${esc(p.banner_color)}"></div>
+    <div class="px-4 pb-4">
+      <div class="-mt-12">${avatar(p, "lg")}</div>
+      <h2 class="mt-2 text-xl font-bold leading-tight">${esc(p.display_name)}</h2>
+      <p class="text-sm text-slate-500">@${esc(p.username)}</p>
+      ${p.status ? `<p class="mt-2 inline-block rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-700">💬 ${esc(p.status)}</p>` : ""}
+      ${p.career || p.year ? `<p class="mt-2 text-sm">🎓 ${esc([p.career, p.year && `${p.year}º año`].filter(Boolean).join(" · "))}</p>` : ""}
+      ${p.bio ? `<p class="mt-2 whitespace-pre-line break-words text-sm">${esc(p.bio)}</p>` : ""}
+      <p class="mt-3 text-xs text-slate-500"><b>${p.friends}</b> amigo${p.friends === 1 ? "" : "s"}${p.mutual ? ` · <b>${p.mutual}</b> en común` : ""}</p>
+      ${p.badges.length ? `<div class="mt-3 flex flex-wrap gap-1.5">${p.badges.map((b) => `<span title="${esc(b.desc)}" class="rounded-full bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700">${b.emoji} ${esc(b.label)}</span>`).join("")}</div>` : ""}
+    </div>
+  </div>`;
+
+async function profileCard(id) {
+  const p = await api("GET", `/users/${id}/profile?today=${today()}`);
+  const action = id === ME.id ? `<a href="#perfil" class="btn-primary">Editar perfil</a>`
+    : p.is_friend ? `<button data-fcal class="btn-primary">Ver días</button>` : `<button data-fadd class="btn-primary">Agregar</button>`;
+  openDialog(`<div class="relative">${profileCardHtml(p)}
+    <button data-close class="btn absolute right-3 top-3 h-9 w-9 !p-0" aria-label="Cerrar">&#10005;</button>
+    <div class="grid px-4 pb-4">${action}</div></div>`, (d) => {
+    const cal = $("[data-fcal]", d), add = $("[data-fadd]", d);
+    if (cal) cal.onclick = () => friendCalendar(p);
+    if (add) add.onclick = async () => {
+      const r = await api("POST", "/friends", { username: p.username });
+      toast(r.status === "accepted" ? "¡Ahora son amigos!" : "Solicitud enviada");
+      closeDialog(); render();
+    };
+  });
+}
+
+// Recorta al centro y achica a 256px (los GIF se suben tal cual para no perder la animación)
+async function squareAvatar(file) {
+  if (file.type === "image/gif") return file;
+  try {
+    const bmp = await createImageBitmap(file);
+    const side = Math.min(bmp.width, bmp.height), out = Math.min(256, side);
+    const c = Object.assign(document.createElement("canvas"), { width: out, height: out });
+    c.getContext("2d").drawImage(bmp, (bmp.width - side) / 2, (bmp.height - side) / 2, side, side, 0, 0, out, out);
+    return (await new Promise((r) => c.toBlob(r, "image/webp", 0.85))) || file;
+  } catch { return file; } // el servidor valida el formato igual
+}
+
+async function perfil(v) {
+  const p = await api("GET", `/users/${ME.id}/profile?today=${today()}`);
+  const hint = (next, days) => `<small class="mt-1 block text-xs font-normal text-slate-400">${next ? `Podrás cambiarlo el ${shortDate(next.slice(0, 10))}` : `Se puede cambiar cada ${days} días`}</small>`;
+  v.innerHTML = `
+    <h1 class="h1">Tu perfil</h1>
+    <section class="card mt-4 overflow-hidden !p-0">${profileCardHtml(p)}</section>
+    <section class="card mt-4 flex flex-wrap items-center gap-3">
+      <label class="btn-primary cursor-pointer">Cambiar foto<input data-avatar type="file" accept="image/png,image/jpeg,image/webp,image/gif" class="sr-only" aria-label="Cambiar foto"></label>
+      ${ME.avatar_url ? `<button data-noavatar class="btn">Quitar foto</button>` : ""}
+      <span class="muted">PNG, JPG, WEBP o GIF animado, hasta 2 MB.</span>
+    </section>
+    <form data-profile class="card mt-4 grid grid-cols-2 gap-3">
+      <label class="field col-span-2">Nombre público<input class="input" name="display_name" required maxlength="60" value="${esc(ME.display_name)}" ${ME.display_name_next_change ? "disabled" : ""}>${hint(ME.display_name_next_change, 14)}</label>
+      <label class="field col-span-2">Usuario (@)<input class="input" name="username" required pattern="[a-z0-9_.]{3,30}" autocapitalize="none" value="${esc(ME.username)}" ${ME.username_next_change ? "disabled" : ""}>${hint(ME.username_next_change, 30)}</label>
+      <label class="field col-span-2">Estado<input class="input" name="status" maxlength="60" value="${esc(ME.status)}" placeholder="Ej: Sobreviviendo a certámenes"></label>
+      <label class="field">Carrera<input class="input" name="career" maxlength="60" value="${esc(ME.career)}" placeholder="Ej: Ing. Civil Industrial"></label>
+      <label class="field">Año<select class="input" name="year"><option value="">—</option>${[1, 2, 3, 4, 5, 6, 7].map((y) => `<option value="${y}" ${ME.year === y ? "selected" : ""}>${y}º año</option>`).join("")}</select></label>
+      <label class="field col-span-2">Descripción<textarea class="input" name="bio" rows="3" maxlength="160">${esc(ME.bio)}</textarea></label>
+      <fieldset class="col-span-2"><legend class="field">Color del banner</legend><div class="mt-2 flex flex-wrap gap-3">${BANNERS.map((c) => `
+        <input type="radio" name="banner_color" value="${c}" aria-label="Color ${c}" ${ME.banner_color === c ? "checked" : ""} class="h-8 w-8 cursor-pointer appearance-none rounded-full ring-slate-900 ring-offset-2 checked:ring-2" style="background:${c}">`).join("")}</div></fieldset>
+      <button class="btn-primary col-span-2">Guardar perfil</button>
+    </form>
+    <a href="#semestre" class="btn mt-4 w-full">Semestre, fechas y feriados</a>
+    <button data-logout class="mt-6 w-full text-center text-sm text-slate-500">Cerrar sesión</button>`;
+  $("[data-profile]", v).onsubmit = async (e) => {
+    e.preventDefault();
+    const x = formData(e.target);
+    ME = await api("PATCH", "/me", { ...x, year: x.year ? Number(x.year) : null });
+    toast("Perfil guardado");
+    render();
+  };
+  $("[data-avatar]", v).onchange = async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    ME = await api("PUT", "/me/avatar", await squareAvatar(f));
+    toast("Foto actualizada");
+    render();
+  };
+  const del = $("[data-noavatar]", v);
+  if (del) del.onclick = async () => { await api("DELETE", "/me/avatar"); ME = await api("GET", "/me"); render(); };
+  $("[data-logout]", v).onclick = logout;
 }
 
 // ---------- amigos ----------
 const person = (u, actions, extra = "") => `
   <li class="flex items-center justify-between gap-2 py-3">
-    <div class="flex items-center gap-3"><span class="grid h-10 w-10 place-items-center rounded-full bg-indigo-100 font-bold text-indigo-700">${esc(u.display_name[0]?.toUpperCase())}</span>
-    <div><div class="font-medium leading-tight">${esc(u.display_name)}</div><div class="text-xs text-slate-500">@${esc(u.username)}</div>${extra ? `<div class="text-xs text-indigo-600">${extra}</div>` : ""}</div></div>
+    <button data-profile="${u.id}" class="flex items-center gap-3 text-left">${avatar(u)}
+    <div><div class="font-medium leading-tight">${esc(u.display_name)}</div><div class="text-xs text-slate-500">@${esc(u.username)}</div>${extra ? `<div class="text-xs text-indigo-600">${extra}</div>` : ""}</div></button>
     <div class="flex gap-2">${actions}</div></li>`;
 
 async function amigos(v) {
@@ -470,6 +561,7 @@ async function amigos(v) {
   $$("[data-accept]", v).forEach((b) => (b.onclick = async () => { await api("POST", `/friends/${b.dataset.accept}/accept`); render(); }));
   $$("[data-remove]", v).forEach((b) => (b.onclick = async () => { await api("DELETE", `/friends/${b.dataset.remove}`); render(); }));
   $$("[data-cal]", v).forEach((b) => (b.onclick = () => friendCalendar(f.friends.find((u) => u.id === Number(b.dataset.cal)))));
+  $$("[data-profile]", v).forEach((b) => (b.onclick = () => profileCard(Number(b.dataset.profile))));
 }
 
 async function friendCalendar(u) {
@@ -588,7 +680,7 @@ async function agenda(v, arg) {
 }
 
 // ---------- router ----------
-const routes = { login, inicio, horario, semestre, amigos, propuestas, agenda };
+const routes = { login, inicio, horario, semestre, perfil, amigos, propuestas, agenda };
 async function render() {
   const [name, arg] = location.hash.slice(1).split("/");
   const route = routes[name] ? name : token ? "inicio" : "login";
@@ -598,7 +690,7 @@ async function render() {
   $$("#nav [data-route]").forEach((a) => a.classList.toggle("text-indigo-600", a.dataset.route === route));
   try {
     if (token && !ME) ME = await api("GET", "/me");
-    $("#hdr").innerHTML = ME ? `<a href="#semestre" class="opacity-90">@${esc(ME.username)}</a>` : "";
+    $("#hdr").innerHTML = ME ? `<a href="#perfil" class="flex items-center gap-2 opacity-95">${avatar(ME, "sm")}@${esc(ME.username)}</a>` : "";
     await routes[route]($("#view"), arg);
     if (ME) refreshBadge();
   } catch (e) {

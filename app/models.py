@@ -1,7 +1,7 @@
 import datetime as dt
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, Time, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -22,6 +22,17 @@ class User(Base):
     display_name: Mapped[str] = mapped_column(String(60))
     password_hash: Mapped[str] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # perfil
+    bio: Mapped[str] = mapped_column(String(160), default="", server_default="")
+    career: Mapped[str] = mapped_column(String(60), default="", server_default="")
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    status: Mapped[str] = mapped_column(String(60), default="", server_default="")
+    banner_color: Mapped[str] = mapped_column(String(7), default="#4f46e5", server_default="#4f46e5")
+    avatar: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)  # solo se carga al pedir la foto
+    avatar_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    avatar_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    username_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    display_name_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Friendship(Base):
