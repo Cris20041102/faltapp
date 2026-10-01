@@ -172,11 +172,29 @@ async function inicio(v) {
   if (!sem) { location.hash = "#semestre"; return; }
   const s = await api("GET", `/semesters/${sem.id}/summary?today=${today()}`);
   const wd = Object.entries(s.weekdays);
+  // las 2 últimas jornadas con clases (hasta hoy): marcar una falta es 1 toque, sin buscar en el calendario
+  const recent = Object.keys(s.calendar).filter((d) => d <= today() && s.calendar[d] !== "gris").sort().slice(-2).reverse();
+  const dayLabel = (d) => (d === today() ? "Hoy" : d === iso(new Date(Date.now() - 864e5)) ? "Ayer" : longDate(d));
   v.innerHTML = `
     <div class="flex items-end justify-between">
       <div><p class="muted">Semestre</p><h1 class="h1">${esc(sem.name)}</h1></div>
       <div class="flex flex-col items-end gap-1 text-sm font-medium text-indigo-600"><a href="#importar">Importar de Phoenix</a><a href="#semestre">Fechas y feriados</a></div>
     </div>
+    ${s.courses.length && recent.length ? `
+      <section class="card mt-4">
+        <h2 class="h2">¿Fuiste a clases?</h2>
+        <p class="muted">Toca la clase a la que faltaste.</p>${recent.map((d) => {
+          const marked = new Set(s.absences.filter((a) => a.date === d).map((a) => a.slot_id));
+          return `
+        <h3 class="mt-3 text-sm font-semibold text-slate-600">${dayLabel(d)}</h3>
+        <ul class="mt-1 space-y-2">${s.courses.flatMap((c) => c.slots.filter((x) => x.weekday === weekdayOf(d)).map((x) => ({ ...x, c })))
+          .sort((a, b) => a.start_time.localeCompare(b.start_time)).map((x) => `
+          <li><button data-quick="${d}" data-slot-id="${x.id}" aria-pressed="${marked.has(x.id)}" class="flex w-full items-center gap-3 rounded-xl border p-3 text-left ${marked.has(x.id) ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200"}">
+            <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs opacity-70">${x.c.kind === "L" ? "Lab" : "Teoría"} · ${x.start_time.slice(0, 5)}</span></span>
+            <span class="text-sm font-semibold">${marked.has(x.id) ? "Faltaste · deshacer" : "Falté"}</span></button></li>`).join("")}
+        </ul>`;
+        }).join("")}
+      </section>` : ""}
     ${s.courses.length ? `
       <section class="card mt-4">
         <h2 class="h2">Días completos que aún puedes faltar</h2>
@@ -192,6 +210,11 @@ async function inicio(v) {
     <section class="card mt-4"><div id="cal"></div>${legend(undefined, true)}</section>
     <section class="mt-4 grid gap-3 sm:grid-cols-2">${s.courses.map(courseCard).join("")}</section>`;
   const tests = new Set(s.events.filter((e) => e.kind === "prueba").map((e) => e.date));
+  $$("[data-quick]", v).forEach((b) => (b.onclick = async () => {
+    const r = await api(b.getAttribute("aria-pressed") === "true" ? "DELETE" : "POST", "/absences", { date: b.dataset.quick, slot_ids: [Number(b.dataset.slotId)] });
+    r?.warnings?.forEach((m) => toast("⚠ " + m));
+    render();
+  }));
   calendar($("#cal", v), "home", s.calendar, { start: s.semester.start_date, end: s.semester.end_date }, (d) => openDay(s, d), tests);
 }
 

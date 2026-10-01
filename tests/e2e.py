@@ -107,6 +107,12 @@ def main():
             imp.get_by_role("button", name="Importar").click()
             imp.wait_for_url("**/#inicio")
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
+
+            # marcar en 1 toque desde Inicio (últimas clases), sirve igual en PC, Android y iPhone
+            q = imp.locator("[data-quick]").first
+            was = q.get_attribute("aria-pressed") == "true"
+            q.click()
+            expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("3" if was else "1")
             imp.close()
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
