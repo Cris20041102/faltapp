@@ -376,6 +376,22 @@ def list_friends(user: User = Depends(current_user), db: Session = Depends(get_d
     return out
 
 
+@router.get("/friends/suggestions")
+def friend_suggestions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    # ponytail: carga todas las amistades aceptadas en memoria; pasar a un JOIN en SQL si hay miles de usuarios
+    adj: dict[int, set[int]] = {}
+    for a, b in db.execute(select(Friendship.requester_id, Friendship.addressee_id).where(Friendship.status == "accepted")):
+        adj.setdefault(a, set()).add(b)
+        adj.setdefault(b, set()).add(a)
+    mine = adj.get(user.id, set())
+    related = {user.id} | set(db.scalars(select(Friendship.requester_id).where(Friendship.addressee_id == user.id))) \
+        | set(db.scalars(select(Friendship.addressee_id).where(Friendship.requester_id == user.id)))
+    mutual = {x: len(adj[x] & mine) for f in mine for x in adj[f] if x not in related}
+    ids = sorted(mutual, key=lambda x: (-mutual[x], -x))[:10]
+    ids += db.scalars(select(User.id).where(User.id.not_in(related | set(ids))).order_by(User.id.desc()).limit(10 - len(ids))).all()
+    return [user_out(db.get(User, i)) | {"mutual": mutual.get(i, 0)} for i in ids]
+
+
 @router.post("/friends")
 def add_friend(body: FriendIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     other = db.scalar(select(User).where(User.username == body.username.strip().lower()))

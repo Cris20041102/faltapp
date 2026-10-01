@@ -123,3 +123,22 @@ def test_aceptar_sin_clases(client):
     assert client.post(f"/api/proposals/{pid}/respond", headers=hb, json={"accept": True}).status_code == 200
     m = {m["username"]: m for m in client.get("/api/proposals", headers=hb).json()[0]["members"]}
     assert m["beto"]["status"] == "accepted" and m["beto"]["color"] == "gris"
+
+
+def test_sugerencias_amigos_en_comun(client):
+    ha, hb, ida, idb = friends(client)                 # ana - beto
+    hc = register(client, "carla")
+    client.post("/api/friends", headers=hc, json={"username": "beto"})
+    client.post(f"/api/friends/{me(client, hc)['id']}/accept", headers=hb)  # beto - carla
+    register(client, "dani")                            # sin amigos
+    sug = client.get("/api/friends/suggestions", headers=ha).json()
+    assert [(u["username"], u["mutual"]) for u in sug] == [("carla", 1), ("dani", 0)]
+
+
+def test_sugerencias_excluye_pendientes(client):
+    ha, hc = register(client, "ana"), register(client, "carla")
+    hd = register(client, "dani")
+    client.post("/api/friends", headers=ha, json={"username": "carla"})
+    assert [u["username"] for u in client.get("/api/friends/suggestions", headers=ha).json()] == ["dani"]
+    assert [u["username"] for u in client.get("/api/friends/suggestions", headers=hc).json()] == ["dani"]
+    assert {u["username"] for u in client.get("/api/friends/suggestions", headers=hd).json()} == {"ana", "carla"}

@@ -422,14 +422,15 @@ async function semestre(v) {
 }
 
 // ---------- amigos ----------
-const person = (u, actions) => `
+const person = (u, actions, extra = "") => `
   <li class="flex items-center justify-between gap-2 py-3">
     <div class="flex items-center gap-3"><span class="grid h-10 w-10 place-items-center rounded-full bg-indigo-100 font-bold text-indigo-700">${esc(u.display_name[0]?.toUpperCase())}</span>
-    <div><div class="font-medium leading-tight">${esc(u.display_name)}</div><div class="text-xs text-slate-500">@${esc(u.username)}</div></div></div>
+    <div><div class="font-medium leading-tight">${esc(u.display_name)}</div><div class="text-xs text-slate-500">@${esc(u.username)}</div>${extra ? `<div class="text-xs text-indigo-600">${extra}</div>` : ""}</div></div>
     <div class="flex gap-2">${actions}</div></li>`;
 
 async function amigos(v) {
-  const f = await api("GET", "/friends");
+  const [f, sug] = await Promise.all([api("GET", "/friends"), api("GET", "/friends/suggestions")]);
+  const common = (n) => (n ? `${n} amigo${n > 1 ? "s" : ""} en común` : "Nuevo en Faltapp");
   v.innerHTML = `
     <h1 class="h1">Amigos</h1>
     <p class="muted">Tu usuario es <b>@${esc(ME.username)}</b>. Compártelo para que te agreguen.</p>
@@ -438,6 +439,7 @@ async function amigos(v) {
       <button class="btn-primary shrink-0">Agregar</button>
     </form>
     ${f.incoming.length ? `<section class="card mt-4"><h2 class="h2">Solicitudes</h2><ul class="divide-y divide-slate-100">${f.incoming.map((u) => person(u, `<button data-accept="${u.id}" class="btn-primary">Aceptar</button><button data-remove="${u.id}" class="btn">Rechazar</button>`)).join("")}</ul></section>` : ""}
+    ${sug.length ? `<section class="card mt-4"><h2 class="h2">Personas que quizás conozcas</h2><ul class="divide-y divide-slate-100">${sug.map((u) => person(u, `<button data-suggest="${esc(u.username)}" class="btn-primary">Agregar</button>`, common(u.mutual))).join("")}</ul></section>` : ""}
     <section class="card mt-4"><h2 class="h2">Tus amigos</h2>
       <ul class="divide-y divide-slate-100">${f.friends.map((u) => person(u, `<button data-cal="${u.id}" class="btn">Ver días</button>`)).join("") || `<li class="py-3 text-sm text-slate-400">Todavía no agregas a nadie.</li>`}</ul>
     </section>
@@ -448,6 +450,11 @@ async function amigos(v) {
     toast(r.status === "accepted" ? "¡Ahora son amigos!" : "Solicitud enviada");
     render();
   };
+  $$("[data-suggest]", v).forEach((b) => (b.onclick = async () => {
+    const r = await api("POST", "/friends", { username: b.dataset.suggest });
+    toast(r.status === "accepted" ? "¡Ahora son amigos!" : "Solicitud enviada");
+    render();
+  }));
   $$("[data-accept]", v).forEach((b) => (b.onclick = async () => { await api("POST", `/friends/${b.dataset.accept}/accept`); render(); }));
   $$("[data-remove]", v).forEach((b) => (b.onclick = async () => { await api("DELETE", `/friends/${b.dataset.remove}`); render(); }));
   $$("[data-cal]", v).forEach((b) => (b.onclick = () => friendCalendar(f.friends.find((u) => u.id === Number(b.dataset.cal)))));
