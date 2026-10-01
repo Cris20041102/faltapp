@@ -109,3 +109,10 @@ def test_insignias(client):
     assert ids("2026-09-29") == {"fundador", "perfecta", "verde", "planificador", "organizador"}
     client.post("/api/absences", headers=ha, json={"date": "2026-09-23"})
     assert "perfecta" not in ids("2026-09-29")
+
+
+def test_estaticos_se_revalidan(client):
+    assert client.get("/app.css").headers["cache-control"] == "no-cache"
+    h = register(client)
+    url = client.put("/api/me/avatar", headers=h, content=PNG).json()["avatar_url"]
+    assert "immutable" in client.get(url).headers["cache-control"]
