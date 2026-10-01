@@ -40,10 +40,13 @@ def main():
             page.get_by_label("Contraseña").fill("secreto1")
             page.get_by_role("button", name="Crear cuenta").last.click()
 
-            page.get_by_label("Nombre del semestre").fill("2026-2")
-            page.get_by_label("Inicio").fill("2026-08-10")
-            page.get_by_label("Término").fill("2026-12-04")
+            page.get_by_label("Calendario").select_option(label="Universidad de La Serena · 2º semestre 2026")
+            expect(page.get_by_label("Inicio")).to_have_value("2026-08-10")
+            expect(page.get_by_label("Término")).to_have_value("2026-12-04")
             page.get_by_role("button", name="Crear semestre").click()
+            page.wait_for_url("**/#horario")
+            page.goto(URL + "/#semestre")
+            expect(page.get_by_text("Receso Fiestas Patrias")).to_have_count(4)  # 14 al 17/09
 
             page.goto(URL + "/#horario")
             page.get_by_role("button", name="Agregar clase el Miércoles").click()
@@ -57,7 +60,7 @@ def main():
 
             page.goto(URL + "/#inicio")
             card = page.locator("[data-course]").filter(has_text="BD Lab")
-            expect(card.locator("[data-quedan]")).to_have_text("5")
+            expect(card.locator("[data-quedan]")).to_have_text("4")
             day = page.locator('[data-date="2026-10-07"]')
             for _ in range(12):  # navegar hasta octubre, venga de donde venga "hoy"
                 if day.count():
@@ -65,7 +68,7 @@ def main():
                 page.locator("[data-month-next]" if page.locator("[data-date]").first.get_attribute("data-date") < "2026-10" else "[data-month-prev]").click()
             day.click()
             page.get_by_role("button", name="Faltar todo el día").click()
-            expect(card.locator("[data-quedan]")).to_have_text("4")
+            expect(card.locator("[data-quedan]")).to_have_text("3")
             page.screenshot(path=str(ROOT / "e2e.png"), full_page=True)
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)

@@ -14,6 +14,13 @@ const SHORT = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb"];
 const MONTHS = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio", "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"];
 const KINDS = { prueba: "Prueba", entrega: "Entrega", reunion: "Reunión", otro: "Otro" };
 const COUNTRIES = { CL: "Chile", AR: "Argentina", BO: "Bolivia", BR: "Brasil", CO: "Colombia", EC: "Ecuador", ES: "España", US: "Estados Unidos", MX: "México", PY: "Paraguay", PE: "Perú", UY: "Uruguay", VE: "Venezuela" };
+// Calendarios académicos precargados (fuente: calendario oficial de cada U). Agregar uno por semestre.
+const CALENDARS = [
+  { label: "Universidad de La Serena · 2º semestre 2026", name: "ULS 2026-2", start: "2026-08-10", end: "2026-12-04", country: "CL",
+    off: [["2026-09-14", "Receso Fiestas Patrias"], ["2026-09-15", "Receso Fiestas Patrias"], ["2026-09-16", "Receso Fiestas Patrias"],
+      ["2026-09-17", "Receso Fiestas Patrias"], ["2026-09-18", "Independencia Nacional"],
+      ["2026-10-09", "Día del funcionario y receso estudiantil"], ["2026-10-12", "Encuentro de Dos Mundos"]] },
+];
 const COLOR = {
   verde: { cls: "bg-green-500 text-white", dot: "bg-green-500", label: "Puedes faltar" },
   amarillo: { cls: "bg-yellow-400 text-slate-900", dot: "bg-yellow-400", label: "Justo en el límite" },
@@ -331,6 +338,7 @@ async function semestre(v) {
   const countryOpts = Object.entries(COUNTRIES).map(([k, n]) => `<option value="${k}">${n}</option>`).join("");
   const newForm = `
     <form data-new class="grid gap-3 sm:grid-cols-2">
+      <label class="field sm:col-span-2">Calendario<select class="input" name="preset"><option value="">Otro (lo ingreso a mano)</option>${CALENDARS.map((c, i) => `<option value="${i}">${esc(c.label)}</option>`).join("")}</select></label>
       <label class="field sm:col-span-2">Nombre del semestre<input class="input" name="name" required maxlength="60" placeholder="Ej: 2026-2"></label>
       <label class="field">Inicio<input class="input" name="start_date" type="date" required></label>
       <label class="field">Término<input class="input" name="end_date" type="date" required></label>
@@ -371,10 +379,21 @@ async function semestre(v) {
     <p class="muted">Con las fechas y el país calculamos cuántas clases tendrás y cargamos los feriados.</p>
     <section class="card mt-4">${newForm}</section>`;
 
-  $("[data-new]", v).onsubmit = async (e) => {
+  const nf = $("[data-new]", v);
+  nf.preset.onchange = () => {
+    const c = CALENDARS[nf.preset.value];
+    if (c) Object.entries({ name: c.name, start_date: c.start, end_date: c.end, country_code: c.country }).forEach(([k, val]) => (nf.elements[k].value = val));
+  };
+  nf.onsubmit = async (e) => {
     e.preventDefault();
-    const s = await api("POST", "/semesters", formData(e.target));
-    toast(s.holidays_loaded ? "Semestre creado con los feriados nacionales" : "Semestre creado. No pudimos cargar los feriados: agrégalos a mano.", !s.holidays_loaded);
+    const { preset, ...body } = formData(nf);
+    const cal = CALENDARS[preset];
+    const s = await api("POST", "/semesters", body);
+    for (const [date, reason] of cal?.off || []) {
+      await api("POST", `/semesters/${s.id}/no-class-days`, { date, reason }, { quiet: true }).catch(() => {}); // 409 = ya venía como feriado
+    }
+    const ok = cal || s.holidays_loaded;
+    toast(ok ? "Semestre creado con feriados y recesos" : "Semestre creado. No pudimos cargar los feriados: agrégalos a mano.", !ok);
     location.hash = "#horario";
   };
   const edit = $("[data-edit]", v);
