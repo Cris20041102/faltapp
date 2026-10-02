@@ -11,3 +11,5 @@ services:
         sync: false # pegar la URL de Neon
       - key: JWT_SECRET
         generateValue: true
+      - key: CRON_SECRET # clave para que cron-job.org dispare los avisos diarios
+        generateValue: true

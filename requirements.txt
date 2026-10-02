@@ -7,3 +7,5 @@ pyjwt
 httpx
 pytest
 pdfminer.six
+cryptography
+tzdata

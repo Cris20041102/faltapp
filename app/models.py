@@ -1,7 +1,7 @@
 import datetime as dt
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Time, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -123,3 +123,29 @@ class Event(Base):
     date: Mapped[dt.date] = mapped_column(Date)
     time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
     title: Mapped[str] = mapped_column(String(120))
+
+
+# ---------- notificaciones push ----------
+class PushSubscription(Base):
+    """Un navegador/dispositivo que aceptó notificaciones."""
+    __tablename__ = "push_subscriptions"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = _fk("users.id")
+    endpoint: Mapped[str] = mapped_column(Text, unique=True)
+    p256dh: Mapped[str] = mapped_column(String(100))
+    auth: Mapped[str] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
+class SentPush(Base):
+    """Avisos ya enviados (ej. "diario:2026-10-02"), para no repetirlos si el cron corre dos veces."""
+    __tablename__ = "sent_pushes"
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+
+
+class AppSetting(Base):
+    """Valores del servidor que se generan solos (ej. las claves VAPID de las notificaciones)."""
+    __tablename__ = "app_settings"
+    key: Mapped[str] = mapped_column(String(40), primary_key=True)
+    value: Mapped[str] = mapped_column(Text)

@@ -1,8 +1,10 @@
 import datetime as dt
+import hmac
 import os
 import re
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
@@ -14,9 +16,9 @@ from sqlalchemy.orm import Session
 
 from app.auth import current_user, hash_password, make_token, verify_password
 from app.horario_uls import parse as parse_horario_uls
-from app import calc
+from app import calc, push
 from app.db import get_db
-from app.models import Absence, Course, Event, Friendship, NoClassDay, Proposal, ProposalMember, Semester, Slot, User
+from app.models import Absence, Course, Event, Friendship, NoClassDay, Proposal, ProposalMember, PushSubscription, Semester, Slot, User
 
 router = APIRouter(prefix="/api")
 
@@ -437,11 +439,31 @@ def day_slots(db: Session, user: User, d: date, slot_ids: list[int] | None) -> l
     return [mine[i] for i in slot_ids]
 
 
+def quedan_por_ramo(db: Session, user: User) -> dict[int, tuple[str, int]]:
+    s = active_semester(db, user)
+    return {c["id"]: (c["name"], c["quedan"]) for c in calc.summarize(load_plan(db, s), date.today())["courses"]} if s else {}
+
+
+def alertar_faltas(db: Session, user: User, antes: dict[int, tuple[str, int]]) -> None:
+    """Avisa solo al cruzar un umbral: queda 1 falta, quedan 0, o pasa a estar bajo el mínimo."""
+    for cid, (name, q) in quedan_por_ramo(db, user).items():
+        prev = antes.get(cid, (name, q))[1]
+        if q >= prev or (q < 0 and prev < 0):
+            continue
+        title, body = (f"⚠️ Te queda 1 falta en {name}", "Puedes faltar solo una vez más sin quedar bajo el mínimo.") if q == 1 else \
+            (f"🛑 No puedes faltar más a {name}", "Una falta más y quedas bajo el mínimo de asistencia.") if q == 0 else \
+            (f"❌ Reprobarías {name} por asistencia", "Con estas faltas quedas bajo el mínimo.") if q < 0 else (None, None)
+        if title:
+            push.notify(db, [user.id], title, body, "/#inicio")
+
+
 def mark_day(db: Session, user: User, d: date, slot_ids: list[int] | None) -> list[str]:
+    antes = quedan_por_ramo(db, user)
     for x in day_slots(db, user, d, slot_ids):
         if not db.scalar(select(Absence.id).where(Absence.slot_id == x.id, Absence.date == d)):
             db.add(Absence(slot_id=x.id, date=d))
     db.commit()
+    alertar_faltas(db, user, antes)
     return prueba_warnings(db, user, d)
 
 
@@ -478,6 +500,7 @@ def import_absences(body: ImportIn, user: User = Depends(current_user), db: Sess
     """Registro oficial (Phoenix): en los días que trae, manda sobre lo marcado a mano."""
     added = removed = 0
     skipped = []
+    antes = quedan_por_ramo(db, user)
     for it in body.items:
         c = get_owned(db, Course, it.course_id, user)
         s = db.get(Semester, c.semester_id)
@@ -495,6 +518,7 @@ def import_absences(body: ImportIn, user: User = Depends(current_user), db: Sess
                     db.delete(have)
                     removed += 1
     db.commit()
+    alertar_faltas(db, user, antes)
     return {"added": added, "removed": removed, "skipped": skipped}
 
 
@@ -578,6 +602,10 @@ def add_friend(body: FriendIn, user: User = Depends(current_user), db: Session =
         f = Friendship(requester_id=user.id, addressee_id=other.id)
         db.add(f)
     db.commit()
+    if f.status == "accepted":
+        push.notify(db, [other.id], f"🤝 {user.display_name} aceptó tu solicitud", "Ahora pueden coordinar qué días faltar.", "/#amigos")
+    else:
+        push.notify(db, [other.id], f"👋 {user.display_name} quiere ser tu amigo", f"@{user.username} te envió una solicitud en Faltapp.", "/#amigos")
     return {"status": f.status}
 
 
@@ -588,6 +616,7 @@ def accept_friend(id: int, user: User = Depends(current_user), db: Session = Dep
         raise HTTPException(404, "No encontrado")
     f.status = "accepted"
     db.commit()
+    push.notify(db, [id], f"🤝 {user.display_name} aceptó tu solicitud", "Ahora pueden coordinar qué días faltar.", "/#amigos")
     return {"status": f.status}
 
 
@@ -623,6 +652,10 @@ class ProposalIn(BaseModel):
     user_ids: list[int] = Field(min_length=1)
 
 
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+fecha = lambda d: f"{DIAS[d.weekday()]} {d.day}/{d.month:02d}"
+
+
 class RespondIn(BaseModel):
     accept: bool
 
@@ -636,6 +669,7 @@ def create_proposal(body: ProposalIn, today: date = Depends(today_param), user: 
                  members=[ProposalMember(user_id=user.id, status="accepted")] + [ProposalMember(user_id=i) for i in ids])
     db.add(p)
     db.commit()
+    push.notify(db, sorted(ids), f"📅 {user.display_name} te propone faltar el {fecha(body.date)}", body.note or "¿Te sumas?", "/#propuestas")
     warnings = try_mark_day(db, user, body.date) or prueba_warnings(db, user, body.date)
     for i in sorted(ids):
         u = db.get(User, i)
@@ -664,6 +698,9 @@ def respond_proposal(id: int, body: RespondIn, user: User = Depends(current_user
         raise HTTPException(404, "No encontrado")
     m.status = "accepted" if body.accept else "rejected"
     db.commit()
+    p = db.get(Proposal, id)
+    if body.accept and p.creator_id != user.id:
+        push.notify(db, [p.creator_id], f"✅ {user.display_name} se suma a faltar el {fecha(p.date)}", p.note or "Revisa quiénes van.", "/#propuestas")
     return {"warnings": try_mark_day(db, user, db.get(Proposal, id).date) if body.accept else []}
 
 
@@ -745,3 +782,80 @@ def user_profile(id: int, today: date = Depends(today_param), user: User = Depen
     mine, theirs = friend_ids(db, user.id), friend_ids(db, u.id)
     return profile_out(u) | {"friends": len(theirs), "mutual": len(mine & theirs) if u.id != user.id else 0,
                              "is_friend": u.id in mine, "badges": badges(db, u, today)}
+
+
+# ---------- notificaciones ----------
+class PushKeys(BaseModel):
+    p256dh: str = Field(max_length=100)
+    auth: str = Field(max_length=50)
+
+
+class PushSub(BaseModel):
+    endpoint: str = Field(max_length=1000)
+    keys: PushKeys | None = None
+
+    @field_validator("endpoint")
+    @classmethod
+    def _endpoint(cls, v: str) -> str:
+        if not push.allowed_endpoint(v):
+            raise ValueError("Ese servicio de notificaciones no está permitido")
+        return v
+
+
+@router.get("/push/key")
+def push_key(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return {"key": push.public_key(db)}
+
+
+@router.post("/push/subscribe", status_code=204)
+def push_subscribe(body: PushSub, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    if not body.keys:
+        raise HTTPException(422, "Faltan las claves de la suscripción")
+    s = db.scalar(select(PushSubscription).where(PushSubscription.endpoint == body.endpoint)) or PushSubscription(endpoint=body.endpoint)
+    s.user_id, s.p256dh, s.auth = user.id, body.keys.p256dh, body.keys.auth  # el dispositivo queda con la cuenta actual
+    db.add(s)
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.delete("/push/subscribe", status_code=204)
+def push_unsubscribe(body: PushSub, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    db.execute(delete(PushSubscription).where(PushSubscription.endpoint == body.endpoint, PushSubscription.user_id == user.id))
+    db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/push/test", status_code=204)
+def push_test(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    push.notify(db, [user.id], "🔔 Notificaciones activadas", "Así te avisaremos de pruebas, faltas y amigos.", "/#inicio")
+    return Response(status_code=204)
+
+
+@router.get("/cron/daily")
+def cron_daily(key: str = "", today: date | None = None, db: Session = Depends(get_db)):
+    """Lo llama cron-job.org cada tarde. Se puede llamar varias veces: no repite avisos."""
+    secret = os.environ.get("CRON_SECRET")
+    if not secret:
+        raise HTTPException(503, "Falta configurar CRON_SECRET")
+    if not hmac.compare_digest(key.encode(), secret.encode()):
+        raise HTTPException(403, "Clave incorrecta")
+    today = today or datetime.now(ZoneInfo("America/Santiago")).date()
+    with_push = set(db.scalars(select(PushSubscription.user_id)))
+    for s in db.scalars(select(Semester).where(Semester.active, Semester.user_id.in_(with_push))).all():
+        uid, p = s.user_id, load_plan(db, s)
+        res = calc.summarize(p, today)
+        hoy = [c.name for c in s.courses if any(x.weekday == today.weekday() for x in c.slots)]
+        if hoy and res["calendar"].get(today.isoformat(), "gris") != "gris" and all(d != today for _, d in p.absences):
+            push.notify(db, [uid], "¿Faltaste a alguna clase hoy?", f"Hoy tuviste {', '.join(hoy)}. Si faltaste, márcalo en un toque.",
+                        "/#inicio", key=f"diario:{today}")
+        for e in s.events:
+            if e.date == today + timedelta(days=1):
+                ramo = next((c.name for c in s.courses if c.id == e.course_id), "")
+                detalle = " · ".join(x for x in (ramo, e.time and e.time.strftime("%H:%M")) if x) or "Revisa tu agenda."
+                push.notify(db, [uid], f"📝 Mañana: {e.title}", detalle, "/#agenda", key=f"evento:{e.id}:{e.date}")
+        nuevos = [c for c in res["courses"] if c["faltar_todo"] and push.claim(db, uid, f"todo:{c['id']}")]
+        if nuevos:
+            title = ("🎉 Ya puedes faltar a todo lo que queda del semestre" if all(c["faltar_todo"] for c in res["courses"])
+                     else f"🎉 Ya puedes faltar a todo lo que queda en {', '.join(c['name'] for c in nuevos)}")
+            push.notify(db, [uid], title, "Por asistencia ya cumples. Ojo con las pruebas.", "/#inicio")
+    return {"ok": True}

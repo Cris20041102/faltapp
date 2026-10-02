@@ -67,6 +67,10 @@ async function api(method, path, body, { quiet = false } = {}) {
 }
 
 function logout() {
+  const t = token;
+  navigator.serviceWorker?.getRegistration().then((r) => r?.pushManager?.getSubscription()).then((sub) => sub && fetch("/api/push/subscribe", {
+    method: "DELETE", headers: { "Content-Type": "application/json", Authorization: "Bearer " + t }, body: JSON.stringify({ endpoint: sub.endpoint }),
+  })).catch(() => {});
   token = null; ME = null; store.set("token", null);
   location.hash = "#login";
 }
@@ -172,7 +176,8 @@ function courseCard(c) {
 async function inicio(v) {
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
-  const s = await api("GET", `/semesters/${sem.id}/summary?today=${today()}`);
+  const [s, pstate] = await Promise.all([api("GET", `/semesters/${sem.id}/summary?today=${today()}`), pushState()]);
+  const pushBanner = ["off", "ios"].includes(pstate) && !store.get("push-banner-off");
   const wd = Object.entries(s.weekdays);
   // las 2 últimas jornadas con clases (hasta hoy): marcar una falta es 1 toque, sin buscar en el calendario
   const recent = Object.keys(s.calendar).filter((d) => d <= today() && s.calendar[d] !== "gris").sort().slice(-2).reverse();
@@ -182,6 +187,14 @@ async function inicio(v) {
       <div><p class="muted">Semestre</p><h1 class="h1">${esc(sem.name)}</h1></div>
       <div class="flex flex-col items-end gap-1 text-sm font-medium text-indigo-600"><a href="#importar">Importar de Phoenix</a><a href="#semestre">Fechas y feriados</a></div>
     </div>
+    ${pushBanner ? `
+      <section class="mt-4 flex items-start gap-3 rounded-2xl bg-amber-50 p-4 text-amber-900">
+        <span class="text-2xl" aria-hidden="true">🔔</span>
+        <div class="flex-1"><p class="font-semibold">Activa las notificaciones</p>
+          <p class="text-sm">Te avisamos de pruebas, de cuando te quedan pocas faltas y de tus amigos.</p>
+          ${pstate === "ios" ? `<a href="#perfil" class="btn mt-2">Cómo activarlas en iPhone</a>` : `<button data-push-on class="btn-primary mt-2">Activar</button>`}</div>
+        <button data-push-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso">&#10005;</button>
+      </section>` : ""}
     ${s.days.total ? `
       <section data-progress class="card mt-4">
         <h2 class="h2">Llevas ${s.days.done} de ${s.days.total} días de clases</h2>
@@ -227,6 +240,9 @@ async function inicio(v) {
     <section class="card mt-4"><div id="cal"></div>${legend(undefined, true)}</section>
     <section class="mt-4 grid gap-3 sm:grid-cols-2">${s.courses.map(courseCard).join("")}</section>`;
   const tests = new Set(s.events.filter((e) => e.kind === "prueba").map((e) => e.date));
+  bindPush(v);
+  const dismiss = $("[data-push-dismiss]", v);
+  if (dismiss) dismiss.onclick = () => { store.set("push-banner-off", "1"); render(); };
   $$("[data-quick]", v).forEach((b) => (b.onclick = async () => {
     const r = await api(b.getAttribute("aria-pressed") === "true" ? "DELETE" : "POST", "/absences", { date: b.dataset.quick, slot_ids: [Number(b.dataset.slotId)] });
     r?.warnings?.forEach((m) => toast("⚠ " + m));
@@ -522,7 +538,7 @@ async function squareAvatar(file) {
 }
 
 async function perfil(v) {
-  const p = await api("GET", `/users/${ME.id}/profile?today=${today()}`);
+  const [p, pstate] = await Promise.all([api("GET", `/users/${ME.id}/profile?today=${today()}`), pushState()]);
   const hint = (next, days) => `<small class="mt-1 block text-xs font-normal text-slate-400">${next ? `Podrás cambiarlo el ${shortDate(next.slice(0, 10))}` : `Se puede cambiar cada ${days} días`}</small>`;
   v.innerHTML = `
     <h1 class="h1">Tu perfil</h1>
@@ -543,6 +559,7 @@ async function perfil(v) {
         <input type="radio" name="banner_color" value="${c}" aria-label="Color ${c}" ${ME.banner_color === c ? "checked" : ""} class="h-8 w-8 cursor-pointer appearance-none rounded-full ring-slate-900 ring-offset-2 checked:ring-2" style="background:${c}">`).join("")}</div></fieldset>
       <button class="btn-primary col-span-2">Guardar perfil</button>
     </form>
+    <section class="card mt-4"><h2 class="h2">🔔 Notificaciones</h2><div class="mt-2">${PUSH_CARD[pstate]}</div></section>
     <a href="#semestre" class="btn mt-4 w-full">Semestre, fechas y feriados</a>
     <button data-logout class="mt-6 w-full text-center text-sm text-slate-500">Cerrar sesión</button>`;
   $("[data-profile]", v).onsubmit = async (e) => {
@@ -562,6 +579,7 @@ async function perfil(v) {
   const del = $("[data-noavatar]", v);
   if (del) del.onclick = async () => { await api("DELETE", "/me/avatar"); ME = await api("GET", "/me"); render(); };
   $("[data-logout]", v).onclick = logout;
+  bindPush(v);
 }
 
 // ---------- amigos ----------
@@ -851,6 +869,72 @@ async function importar(v, arg) {
   };
 }
 
+// ---------- notificaciones ----------
+const PUSH_OK = "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+const STANDALONE = matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+const b64ToBytes = (s) => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/") + "=".repeat((4 - (s.length % 4)) % 4)), (c) => c.charCodeAt(0));
+
+// on | off | denied | ios (iPhone sin instalar: Apple solo permite avisos a apps agregadas al inicio) | no
+async function pushState() {
+  if (!PUSH_OK) return DEVICE === "iphone" && !STANDALONE ? "ios" : "no";
+  if (Notification.permission === "denied") return "denied";
+  const reg = await navigator.serviceWorker.getRegistration();
+  return (await reg?.pushManager.getSubscription()) && Notification.permission === "granted" ? "on" : "off";
+}
+
+async function enablePush() {
+  try {
+    if ((await Notification.requestPermission()) !== "granted") { toast("Sin permiso no podemos avisarte. Puedes activarlas después en tu perfil.", true); return; }
+    const reg = await navigator.serviceWorker.ready;
+    const { key } = await api("GET", "/push/key");
+    const sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) });
+    await api("POST", "/push/subscribe", sub.toJSON());
+    await api("POST", "/push/test");
+    toast("🔔 Notificaciones activadas");
+  } catch (e) {
+    console.warn(e);
+    toast("No se pudieron activar en este navegador. Prueba con Chrome (o Safari en iPhone).", true);
+  }
+  render();
+}
+
+async function disablePush() {
+  const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+  if (sub) {
+    await api("DELETE", "/push/subscribe", { endpoint: sub.endpoint }, { quiet: true }).catch(() => {});
+    await sub.unsubscribe();
+  }
+  toast("Notificaciones desactivadas en este dispositivo");
+  render();
+}
+
+// Si el dispositivo ya tenía permiso, lo vuelve a asociar a la cuenta con la que se entró
+let pushSynced = false;
+async function syncPush() {
+  if (pushSynced || !PUSH_OK || Notification.permission !== "granted") return;
+  pushSynced = true;
+  const sub = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
+  if (sub) await api("POST", "/push/subscribe", sub.toJSON(), { quiet: true }).catch(() => {});
+}
+
+const PUSH_CARD = {
+  on: `<p class="text-sm">✅ Activadas en este dispositivo.</p>
+    <div class="mt-3 flex flex-wrap gap-2"><button data-push-test class="btn">Enviar una de prueba</button><button data-push-off class="btn">Desactivar</button></div>`,
+  off: `<p class="muted">Te avisamos de pruebas, de cuando te quedan pocas faltas y de tus amigos, y cada tarde con clases te preguntamos si faltaste.</p>
+    <button data-push-on class="btn-primary mt-3">Activar notificaciones</button>`,
+  denied: `<p class="text-sm text-red-600">Las bloqueaste para Faltapp. Para activarlas: toca el candado 🔒 junto a la dirección → <b>Notificaciones</b> → <b>Permitir</b>, y recarga la página.</p>`,
+  ios: `<p class="text-sm">En iPhone los avisos solo funcionan si agregas Faltapp a tu pantalla de inicio:</p>
+    <ol class="mt-2 list-decimal space-y-1 pl-5 text-sm"><li>En Safari toca <b>Compartir</b> (el cuadrado con una flecha hacia arriba).</li>
+    <li>Toca <b>Agregar a inicio</b> y luego <b>Agregar</b>.</li><li>Abre Faltapp desde el ícono nuevo, inicia sesión y vuelve aquí para activarlas.</li></ol>`,
+  no: `<p class="muted">Este navegador no permite notificaciones. Prueba con Chrome (o Safari en iPhone).</p>`,
+};
+const bindPush = (v) => {
+  $$("[data-push-on]", v).forEach((b) => (b.onclick = enablePush));
+  const off = $("[data-push-off]", v), test = $("[data-push-test]", v);
+  if (off) off.onclick = disablePush;
+  if (test) test.onclick = async () => { await api("POST", "/push/test"); toast("Enviada: debería llegarte en unos segundos"); };
+};
+
 // ---------- router ----------
 const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda };
 async function render() {
@@ -864,7 +948,7 @@ async function render() {
     if (token && !ME) ME = await api("GET", "/me");
     $("#hdr").innerHTML = ME ? `<a href="#perfil" class="flex items-center gap-2 opacity-95">${avatar(ME, "sm")}@${esc(ME.username)}</a>` : "";
     await routes[route]($("#view"), arg);
-    if (ME) refreshBadge();
+    if (ME) { refreshBadge(); syncPush(); }
   } catch (e) {
     console.warn(e); // el error ya se mostró como toast
   }

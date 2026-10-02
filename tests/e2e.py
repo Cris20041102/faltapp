@@ -30,7 +30,7 @@ def main():
             except httpx.HTTPError:
                 time.sleep(0.1)
         with sync_playwright() as pw:
-            b = pw.chromium.launch()
+            b = pw.chromium.launch(channel="chromium")  # Chromium completo: el "headless shell" no soporta notificaciones
             page = b.new_page(viewport={"width": 390, "height": 844})
             errors = []
             page.on("pageerror", lambda e: errors.append(str(e)))
@@ -149,6 +149,30 @@ def main():
             expect(op.locator("[data-course]").filter(has_text="Bases de Datos").get_by_text("Ve a las próximas")).to_be_visible()
             expect(op.locator("[data-ir]")).to_contain_text("después puedes faltar a todo lo que queda del semestre")
             octc.close()
+
+            # notificaciones: aviso en Inicio (se puede cerrar), tarjeta en el perfil y el service worker muestra el push
+            page.goto(URL + "/#inicio")
+            expect(page.get_by_text("Activa las notificaciones")).to_be_visible()
+            page.goto(URL + "/#perfil")
+            expect(page.get_by_role("button", name="Activar notificaciones")).to_be_visible()
+            page.goto(URL + "/#inicio")
+            page.get_by_role("button", name="Cerrar aviso").click()
+            expect(page.get_by_text("Activa las notificaciones")).to_be_hidden()
+            page.reload()
+            expect(page.locator("[data-progress]")).to_be_visible()
+            expect(page.get_by_text("Activa las notificaciones")).to_be_hidden()
+            page.context.grant_permissions(["notifications"])
+            reg = page.evaluate("navigator.serviceWorker.ready.then((r) => r.scope)")
+            cdp = page.context.new_cdp_session(page)
+            cdp.send("ServiceWorker.enable")
+            regs = []
+            cdp.on("ServiceWorker.workerRegistrationUpdated", lambda e: regs.extend(e["registrations"]))
+            page.wait_for_timeout(500)
+            rid = next(r["registrationId"] for r in regs if r["scopeURL"] == reg)
+            cdp.send("ServiceWorker.deliverPushMessage", {"origin": URL, "registrationId": rid,
+                                                          "data": '{"title": "📝 Mañana: Certamen 2", "body": "BD", "url": "/#agenda"}'})
+            page.wait_for_function("navigator.serviceWorker.ready.then((r) => r.getNotifications()).then((n) => n.length > 0)")
+            assert page.evaluate("navigator.serviceWorker.ready.then((r) => r.getNotifications()).then((n) => n[0].title)") == "📝 Mañana: Certamen 2"
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
             page.goto(URL + "/#inicio")

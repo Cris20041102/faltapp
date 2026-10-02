@@ -19,3 +19,19 @@ self.addEventListener("fetch", (e) => {
       .catch(() => caches.match(e.request).then((r) => r || caches.match("/")))
   );
 });
+
+// Notificaciones push: el servidor manda {title, body, url}; al tocarla se abre esa pantalla de Faltapp
+self.addEventListener("push", (e) => {
+  const d = e.data ? e.data.json() : { title: "Faltapp" };
+  e.waitUntil(self.registration.showNotification(d.title, {
+    body: d.body || "", icon: "/icon-192.png", badge: "/icon-192.png", tag: d.tag, data: { url: d.url || "/#inicio" },
+  }));
+});
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = new URL(e.notification.data?.url || "/#inicio", self.location.origin).href;
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((tabs) => {
+    const tab = tabs.find((t) => t.url.startsWith(self.location.origin));
+    return tab ? tab.focus().then((t) => t.navigate(url)).catch(() => self.clients.openWindow(url)) : self.clients.openWindow(url);
+  }));
+});
