@@ -81,3 +81,26 @@ def test_progreso_y_faltar_todo():
     p.absences -= {(1, date(2026, 8, 19))}  # con 1 real + 2 planeadas: quedan 1 ≥ 1 por decidir
     assert summarize(p, date(2026, 9, 23))["courses"][0]["faltar_todo"] is True
     assert summarize(p, date(2026, 10, 20))["courses"][0]["faltar_todo"] is False  # semestre terminado: no queda nada
+
+
+def test_ir_seguido_y_luego_faltar_todo():
+    # 10 miércoles (12/08 al 14/10), teoría 60%: puede faltar 4. Hoy 19/08: van 2, quedan 8 por delante.
+    p = Plan(date(2026, 8, 10), date(2026, 10, 16), set(),
+             [Course(1, "BD", "T", 60), Course(2, "SI", "T", 60)], [Slot(1, 1, 2), Slot(2, 2, 2)])
+    hoy = date(2026, 8, 19)
+    s = summarize(p, hoy)
+    assert s["courses"][0]["ir_seguido"] == {"clases": 4, "hasta": "2026-09-16", "luego": 4}  # 8 por delante - 4 permitidas
+    assert s["ir_seguido"] == {"dias": 4, "hasta": "2026-09-16"}
+    p.absences |= {(1, date(2026, 9, 30))}  # ya planea faltar el 30/09: le quedan 3 faltas y 7 clases por decidir
+    s = summarize(p, hoy)
+    assert s["courses"][0]["ir_seguido"] == {"clases": 4, "hasta": "2026-09-16", "luego": 3}
+    p.absences = {(2, d) for d in (date(2026, 8, 12), date(2026, 8, 19), date(2026, 8, 26))}  # SI: 3 faltas, le queda 1
+    s = summarize(p, date(2026, 8, 26))
+    si = s["courses"][1]
+    assert si["ir_seguido"] == {"clases": 6, "hasta": "2026-10-07", "luego": 1}  # 7 por delante - 1
+    assert s["ir_seguido"] == {"dias": 6, "hasta": "2026-10-07"}  # manda el ramo más exigente
+    p.absences.add((2, date(2026, 9, 2)))  # SI ya no puede faltar más: tiene que ir a todo, no hay "después"
+    s = summarize(p, date(2026, 9, 2))
+    assert s["courses"][1]["ir_seguido"] is None and s["ir_seguido"] is None
+    assert summarize(Plan(date(2026, 8, 10), date(2026, 10, 16), set(), [Course(1, "BD", "T", 60)], [Slot(1, 1, 2)]),
+                     date(2026, 9, 23))["ir_seguido"] is None  # ya puede faltar a todo: eso lo dice el otro aviso

@@ -165,6 +165,7 @@ function courseCard(c) {
       <div class="mt-2 flex items-baseline gap-2"><span data-quedan class="text-4xl font-bold ${tone}">${c.quedan}</span><span class="text-sm text-slate-600">${msg}</span></div>
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
+      ${c.ir_seguido ? `<p class="mt-2 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">💪 Ve a ${c.ir_seguido.clases === 1 ? "la próxima clase" : `las próximas ${c.ir_seguido.clases} clases`} (hasta el ${shortDate(c.ir_seguido.hasta)}) y después puedes faltar a ${c.ir_seguido.luego === 1 ? "la que queda" : `las ${c.ir_seguido.luego} que quedan`}</p>` : ""}
     </article>`;
 }
 
@@ -186,6 +187,10 @@ async function inicio(v) {
         <h2 class="h2">Llevas ${s.days.done} de ${s.days.total} días de clases</h2>
         <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div class="h-2 rounded-full bg-indigo-600" style="width:${Math.round((100 * s.days.done) / s.days.total)}%"></div></div>
         <p class="mt-1 text-xs text-slate-500">${s.days.total - s.days.done ? `Quedan ${s.days.total - s.days.done} días de clases` : "Se terminaron las clases del semestre"}</p>
+      </section>` : ""}
+    ${s.ir_seguido ? `
+      <section data-ir class="mt-4 rounded-2xl bg-indigo-50 p-4 text-indigo-900">
+        <p class="font-semibold">💪 Si vas seguido ${s.ir_seguido.dias === 1 ? "el próximo día de clases" : `los próximos ${s.ir_seguido.dias} días de clases`} (hasta el ${longDate(s.ir_seguido.hasta).toLowerCase()}), después puedes faltar a todo lo que queda del semestre.</p>
       </section>` : ""}
     ${s.courses.length && s.courses.every((c) => c.faltar_todo) ? `
       <section class="mt-4 rounded-2xl bg-green-600 p-4 text-white">

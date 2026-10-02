@@ -139,6 +139,16 @@ def main():
             expect(bd.get_by_text("Ya puedes faltar a todas las que quedan")).to_be_visible()
             expect(dp.get_by_text("Ya puedes faltar a todo lo que queda del semestre")).to_be_visible()
             dic.close()
+            # 1 de octubre: aún no puede faltar a todo, pero sí si va seguido unas semanas
+            octc = b.new_context(viewport={"width": 390, "height": 844})
+            octc.clock.set_fixed_time("2026-10-01T12:00:00")
+            op = octc.new_page()
+            op.goto(URL)
+            op.evaluate("t => localStorage.setItem('token', t)", token)
+            op.goto(URL + "/?r=1#inicio")
+            expect(op.locator("[data-course]").filter(has_text="Bases de Datos").get_by_text("Ve a las próximas")).to_be_visible()
+            expect(op.locator("[data-ir]")).to_contain_text("después puedes faltar a todo lo que queda del semestre")
+            octc.close()
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
             page.goto(URL + "/#inicio")

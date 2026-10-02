@@ -54,11 +54,16 @@ def _stats(p: Plan, today: date) -> dict[int, dict]:
         quedan = total - minimo - len(valid)
         dictadas = sum(d <= today for s in slots for d in class_dates(p, s.weekday))
         restantes = total - dictadas
+        # clases por delante que aún no marca como falta; si va a las primeras k, después puede faltar al resto
+        proximas = sorted(d for s in slots for d in class_dates(p, s.weekday) if d > today and (s.id, d) not in p.absences)
+        k = len(proximas) - quedan
+        ir_seguido = ({"clases": k, "hasta": proximas[k - 1].isoformat(), "luego": len(proximas) - k}
+                      if 0 < k < len(proximas) else None)
         out[c.id] = dict(id=c.id, name=c.name, kind=c.kind, min_pct=c.min_pct, total=total, minimo=minimo,
                          permitidas=total - minimo, reales=reales, planeadas=planeadas, quedan=quedan,
                          dictadas=dictadas, restantes=restantes,
                          # aunque falte a todas las que quedan (y no tiene ya planeadas), cumple el mínimo
-                         faltar_todo=restantes > 0 and quedan >= restantes - planeadas)
+                         faltar_todo=restantes > 0 and quedan >= restantes - planeadas, ir_seguido=ir_seguido)
     return out
 
 
@@ -97,9 +102,16 @@ def summarize(p: Plan, today: date) -> dict:
         weekdays[w] = max(0, min(n, left))
     weekdays_with_class = {s.weekday for s in p.slots}
     class_days = [d for d in _days(p) if d.weekday() in weekdays_with_class and d not in p.off]
+    # semestre: si todos los ramos con clases por delante tienen salida, manda el que pide ir hasta más tarde
+    pending = [c for c in stats.values() if c["restantes"] > c["planeadas"]]
+    plans = [c["ir_seguido"] for c in pending if c["ir_seguido"]]
+    hasta = max((x["hasta"] for x in plans), default=None)
+    ir_seguido = ({"dias": sum(today < d <= date.fromisoformat(hasta) for d in class_days), "hasta": hasta}
+                  if plans and all(c["faltar_todo"] or c["ir_seguido"] for c in pending) else None)
     return {
         "courses": list(stats.values()),
         "weekdays": weekdays,
         "days": {"total": len(class_days), "done": sum(d <= today for d in class_days)},
+        "ir_seguido": ir_seguido,
         "calendar": {d.isoformat(): _day_color(p, d, today, stats) for d in _days(p)},
     }
