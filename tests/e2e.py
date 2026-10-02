@@ -123,7 +123,22 @@ def main():
             was = q.get_attribute("aria-pressed") == "true"
             q.click()
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("3" if was else "1")
+
+            # progreso del semestre y aviso de "ya puedes faltar a todo" (fecha fija: 1 dic, queda solo el miércoles 2)
+            token = imp.evaluate("localStorage.getItem('token')")
             imp.close()
+            dic = b.new_context(viewport={"width": 390, "height": 844})  # contexto aparte: el reloj falso es por contexto
+            dic.clock.set_fixed_time("2026-12-01T12:00:00")
+            dp = dic.new_page()
+            dp.goto(URL)
+            dp.evaluate("t => localStorage.setItem('token', t)", token)
+            dp.goto(URL + "/?r=1#inicio")
+            bd = dp.locator("[data-course]").filter(has_text="Bases de Datos")
+            expect(dp.locator("[data-progress]")).to_contain_text("Llevas 15 de 16 días de clases")
+            expect(bd).to_contain_text("Van 15 de 16 clases")
+            expect(bd.get_by_text("Ya puedes faltar a todas las que quedan")).to_be_visible()
+            expect(dp.get_by_text("Ya puedes faltar a todo lo que queda del semestre")).to_be_visible()
+            dic.close()
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
             page.goto(URL + "/#inicio")

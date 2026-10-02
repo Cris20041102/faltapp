@@ -163,7 +163,8 @@ function courseCard(c) {
         <span class="shrink-0 rounded-full ${c.kind === "L" ? "bg-amber-100 text-amber-800" : "bg-indigo-100 text-indigo-800"} px-2 py-0.5 text-xs font-medium">${c.kind === "L" ? "Lab" : "Teoría"} · ${c.min_pct}%</span>
       </div>
       <div class="mt-2 flex items-baseline gap-2"><span data-quedan class="text-4xl font-bold ${tone}">${c.quedan}</span><span class="text-sm text-slate-600">${msg}</span></div>
-      <p class="mt-1 text-xs text-slate-500">${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
+      <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
+      ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
     </article>`;
 }
 
@@ -180,6 +181,17 @@ async function inicio(v) {
       <div><p class="muted">Semestre</p><h1 class="h1">${esc(sem.name)}</h1></div>
       <div class="flex flex-col items-end gap-1 text-sm font-medium text-indigo-600"><a href="#importar">Importar de Phoenix</a><a href="#semestre">Fechas y feriados</a></div>
     </div>
+    ${s.days.total ? `
+      <section data-progress class="card mt-4">
+        <h2 class="h2">Llevas ${s.days.done} de ${s.days.total} días de clases</h2>
+        <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div class="h-2 rounded-full bg-indigo-600" style="width:${Math.round((100 * s.days.done) / s.days.total)}%"></div></div>
+        <p class="mt-1 text-xs text-slate-500">${s.days.total - s.days.done ? `Quedan ${s.days.total - s.days.done} días de clases` : "Se terminaron las clases del semestre"}</p>
+      </section>` : ""}
+    ${s.courses.length && s.courses.every((c) => c.faltar_todo) ? `
+      <section class="mt-4 rounded-2xl bg-green-600 p-4 text-white">
+        <p class="font-semibold">🎉 Ya puedes faltar a todo lo que queda del semestre</p>
+        <p class="mt-1 text-sm opacity-90">Por asistencia ya cumples en todos tus ramos. Ojo con las pruebas: revisa tu <a href="#agenda" class="underline">Agenda</a>.</p>
+      </section>` : ""}
     ${s.courses.length && recent.length ? `
       <section class="card mt-4">
         <h2 class="h2">¿Fuiste a clases?</h2>

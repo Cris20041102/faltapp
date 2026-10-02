@@ -64,3 +64,20 @@ def test_semaforo():
 def test_calendar_cubre_todo_el_semestre():
     cal = summarize(uls(), date(2026, 9, 29))["calendar"]
     assert cal["2026-08-10"] == "asistio" and cal["2026-12-04"] == "verde" and len(cal) == 117
+
+
+def test_progreso_y_faltar_todo():
+    # 10 miércoles (12/08 al 14/10); teoría 60% → mínimo 6, puede faltar 4. BD y SI comparten los miércoles.
+    p = Plan(date(2026, 8, 10), date(2026, 10, 16), set(),
+             [Course(1, "BD", "T", 60), Course(2, "SI", "T", 60)], [Slot(1, 1, 2), Slot(2, 2, 2)])
+    s = summarize(p, date(2026, 9, 23))  # ya pasaron 7 miércoles, quedan 3
+    assert s["days"] == {"total": 10, "done": 7}  # días con clases, no bloques
+    c = s["courses"][0]
+    assert (c["dictadas"], c["restantes"], c["faltar_todo"]) == (7, 3, True)  # quedan 4 faltas ≥ 3 clases
+    p.absences |= {(1, date(2026, 8, 12)), (1, date(2026, 8, 19))}  # 2 faltas reales: quedan 2 < 3
+    assert summarize(p, date(2026, 9, 23))["courses"][0]["faltar_todo"] is False
+    p.absences |= {(1, date(2026, 10, 7)), (1, date(2026, 10, 14))}  # planea faltar a 2 de las 3 que quedan: le queda 1 por decidir y 0 faltas
+    assert summarize(p, date(2026, 9, 23))["courses"][0]["faltar_todo"] is False
+    p.absences -= {(1, date(2026, 8, 19))}  # con 1 real + 2 planeadas: quedan 1 ≥ 1 por decidir
+    assert summarize(p, date(2026, 9, 23))["courses"][0]["faltar_todo"] is True
+    assert summarize(p, date(2026, 10, 20))["courses"][0]["faltar_todo"] is False  # semestre terminado: no queda nada

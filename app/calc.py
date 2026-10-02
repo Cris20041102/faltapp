@@ -51,9 +51,14 @@ def _stats(p: Plan, today: date) -> dict[int, dict]:
                  if sid in by_id and by_id[sid].course_id == c.id and _is_class(p, by_id[sid], d)]
         reales = sum(d <= today for d in valid)
         planeadas = len(valid) - reales
+        quedan = total - minimo - len(valid)
+        dictadas = sum(d <= today for s in slots for d in class_dates(p, s.weekday))
+        restantes = total - dictadas
         out[c.id] = dict(id=c.id, name=c.name, kind=c.kind, min_pct=c.min_pct, total=total, minimo=minimo,
-                         permitidas=total - minimo, reales=reales, planeadas=planeadas,
-                         quedan=total - minimo - len(valid))
+                         permitidas=total - minimo, reales=reales, planeadas=planeadas, quedan=quedan,
+                         dictadas=dictadas, restantes=restantes,
+                         # aunque falte a todas las que quedan (y no tiene ya planeadas), cumple el mínimo
+                         faltar_todo=restantes > 0 and quedan >= restantes - planeadas)
     return out
 
 
@@ -90,8 +95,11 @@ def summarize(p: Plan, today: date) -> dict:
         left = sum(1 for d in class_dates(p, w)
                    if d >= today and any((s.id, d) not in p.absences for s in wslots))
         weekdays[w] = max(0, min(n, left))
+    weekdays_with_class = {s.weekday for s in p.slots}
+    class_days = [d for d in _days(p) if d.weekday() in weekdays_with_class and d not in p.off]
     return {
         "courses": list(stats.values()),
         "weekdays": weekdays,
+        "days": {"total": len(class_days), "done": sum(d <= today for d in class_days)},
         "calendar": {d.isoformat(): _day_color(p, d, today, stats) for d in _days(p)},
     }
