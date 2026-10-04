@@ -16,6 +16,55 @@ PORT = 8765
 URL = f"http://127.0.0.1:{PORT}"
 
 
+def wait_notification(pg, title, seconds=5):
+    """Espera a que el service worker muestre un aviso con ese título (evaluate sí espera promesas; wait_for_function no)."""
+    for _ in range(seconds * 4):
+        if title in pg.evaluate("navigator.serviceWorker.ready.then((r) => r.getNotifications()).then((n) => n.map((x) => x.title))"):
+            return
+        pg.wait_for_timeout(250)
+    raise AssertionError(f"No se mostró el aviso {title!r}")
+
+
+def sw_takeover(browser):
+    """Con la app abierta y una versión vieja del service worker (sin avisos), la nueva debe tomar el control sola.
+    Antes quedaba "esperando" y los avisos llegaban a la vieja, que no los mostraba."""
+    import functools
+    import http.server
+    import shutil
+    import threading
+    root = Path(tempfile.mkdtemp())
+    for f in (ROOT / "static").iterdir():
+        shutil.copy(f, root)
+    (root / "index.html").write_text('<!doctype html><script>navigator.serviceWorker.register("/sw.js")</script>')
+    (root / "sw.js").write_text("self.addEventListener('fetch', () => {});")  # la "versión vieja"
+    os.utime(root / "sw.js", (time.time() - 3600,) * 2)  # fecha anterior: si no, el servidor responde 304 y no ve el cambio
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 8766), functools.partial(http.server.SimpleHTTPRequestHandler, directory=str(root)))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    url = "http://127.0.0.1:8766"
+    try:
+        ctx = browser.new_context()
+        ctx.grant_permissions(["notifications"], origin=url)
+        pg = ctx.new_page()
+        pg.goto(url)
+        pg.evaluate("navigator.serviceWorker.ready.then(() => 1)")
+        pg.reload()
+        pg.wait_for_function("navigator.serviceWorker.controller !== null")
+        shutil.copy(ROOT / "static" / "sw.js", root / "sw.js")  # se publica la versión nueva
+        pg.reload()
+        pg.evaluate("navigator.serviceWorker.getRegistration().then((r) => r.update())")
+        pg.wait_for_timeout(2000)
+        cdp = ctx.new_cdp_session(pg)
+        regs = []
+        cdp.on("ServiceWorker.workerRegistrationUpdated", lambda e: regs.extend(e["registrations"]))
+        cdp.send("ServiceWorker.enable")
+        pg.wait_for_timeout(500)
+        cdp.send("ServiceWorker.deliverPushMessage", {"origin": url, "registrationId": regs[0]["registrationId"], "data": '{"title": "Hola"}'})
+        wait_notification(pg, "Hola")
+        ctx.close()
+    finally:
+        srv.shutdown()
+
+
 def main():
     db = Path(tempfile.mkdtemp()) / "e2e.db"
     env = {**os.environ, "DATABASE_URL": f"sqlite:///{db}", "FALTAPP_NO_HOLIDAYS": "1"}
@@ -58,6 +107,7 @@ def main():
                 page.locator("[data-slot]").first.click()
                 page.get_by_role("button", name="Eliminar el ramo completo").click()
                 page.get_by_role("button", name="¿Seguro?").click()
+                expect(page.locator("#dlg")).not_to_have_attribute("open", "")  # esperar a que se cierre antes del siguiente
             expect(page.locator("[data-slot]")).to_have_count(0)
             page.get_by_role("button", name="Agregar clase el Miércoles").click()
             page.get_by_label("Nombre del ramo").fill("Bases de Datos")
@@ -171,8 +221,7 @@ def main():
             rid = next(r["registrationId"] for r in regs if r["scopeURL"] == reg)
             cdp.send("ServiceWorker.deliverPushMessage", {"origin": URL, "registrationId": rid,
                                                           "data": '{"title": "📝 Mañana: Certamen 2", "body": "BD", "url": "/#agenda"}'})
-            page.wait_for_function("navigator.serviceWorker.ready.then((r) => r.getNotifications()).then((n) => n.length > 0)")
-            assert page.evaluate("navigator.serviceWorker.ready.then((r) => r.getNotifications()).then((n) => n[0].title)") == "📝 Mañana: Certamen 2"
+            wait_notification(page, "📝 Mañana: Certamen 2")
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
             page.goto(URL + "/#inicio")
@@ -180,6 +229,7 @@ def main():
             page.evaluate("location.hash = '#agenda'")
             expect(page.locator("#dlg")).not_to_have_attribute("open", "")
             assert not errors, errors
+            sw_takeover(b)
             b.close()
         print("E2E PASS")
     finally:

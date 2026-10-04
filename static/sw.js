@@ -1,9 +1,10 @@
 const CACHE = "faltapp-v1";
 const SHELL = ["/", "/app.js", "/app.css", "/manifest.json", "/icon.svg"];
 
-self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL))));
+// La versión nueva toma el control al tiro (si no, queda "esperando" mientras la app esté abierta y los avisos no se muestran)
+self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting())));
 self.addEventListener("activate", (e) =>
-  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))))));
+  e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
 
 // Red primero; si no hay conexión, la última copia del shell. La API nunca se cachea.
 self.addEventListener("fetch", (e) => {
