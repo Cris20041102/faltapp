@@ -18,7 +18,7 @@ from app.auth import current_user, hash_password, make_token, verify_password
 from app.horario_uls import parse as parse_horario_uls
 from app import calc, push
 from app.db import get_db
-from app.models import Absence, Course, Event, Friendship, NoClassDay, Proposal, ProposalMember, PushSubscription, Semester, Slot, User
+from app.models import Absence, Course, Event, Friendship, Makeup, NoClassDay, Proposal, ProposalMember, PushSubscription, Semester, Slot, User
 
 router = APIRouter(prefix="/api")
 
@@ -228,7 +228,8 @@ def slot_out(s: Slot) -> dict:
 
 
 def course_out(c: Course) -> dict:
-    return {"id": c.id, "name": c.name, "kind": c.kind, "min_pct": c.min_pct, "slots": [slot_out(s) for s in c.slots]}
+    return {"id": c.id, "name": c.name, "kind": c.kind, "min_pct": c.min_pct, "slots": [slot_out(s) for s in c.slots],
+            "makeups": [{"id": m.id, "original": m.original, "date": m.date} for m in c.makeups]}
 
 
 def semester_out(s: Semester, full: bool = False) -> dict:
@@ -421,20 +422,19 @@ def load_plan(db: Session, s: Semester) -> calc.Plan:
     return calc.Plan(s.start_date, s.end_date, {d.date for d in s.no_class_days},
                      [calc.Course(c.id, c.name, c.kind, c.min_pct) for c in s.courses],
                      [calc.Slot(x.id, x.course_id, x.weekday) for x in slots],
-                     {(a, d) for a, d in absences})
+                     {(a, d) for a, d in absences},
+                     {(m.course_id, m.original, m.date) for c in s.courses for m in c.makeups})
 
 
 def day_slots(db: Session, user: User, d: date, slot_ids: list[int] | None) -> list[Slot]:
     s = active_semester(db, user)
-    off = {x.date for x in s.no_class_days} if s else set()
-    valid = s and s.start_date <= d <= s.end_date and d not in off
-    mine = {x.id: x for c in (s.courses if s else []) for x in c.slots}
+    p = load_plan(db, s) if s else None
+    mine = {x.id: x for c in (s.courses if s else []) for x in c.slots if d in p.dates[x.id]}  # con feriados y recuperaciones
     if slot_ids is None:
-        chosen = [x for x in mine.values() if valid and x.weekday == d.weekday()]
-        if not chosen:
+        if not mine:
             raise HTTPException(400, "No tienes clases ese día")
-        return chosen
-    if not valid or any(i not in mine or mine[i].weekday != d.weekday() for i in slot_ids):
+        return list(mine.values())
+    if any(i not in mine for i in slot_ids):
         raise HTTPException(400, "Ese bloque no tiene clases ese día")
     return [mine[i] for i in slot_ids]
 
@@ -499,9 +499,8 @@ def mark_rest(id: int, body: RestIn, user: User = Depends(current_user), db: Ses
     s = db.get(Semester, get_owned(db, Course, x.course_id, user).semester_id)
     antes = quedan_por_ramo(db, user)
     if body.absent:
-        have = set(db.scalars(select(Absence.date).where(Absence.slot_id == x.id)))
-        p = calc.Plan(s.start_date, s.end_date, {d.date for d in s.no_class_days}, [], [])
-        db.add_all(Absence(slot_id=x.id, date=d) for d in calc.class_dates(p, x.weekday) if d >= body.since and d not in have)
+        p = load_plan(db, s)
+        db.add_all(Absence(slot_id=x.id, date=d) for d in sorted(p.dates[x.id]) if d >= body.since and (x.id, d) not in p.absences)
     else:
         db.execute(delete(Absence).where(Absence.slot_id == x.id, Absence.date >= body.since))
     db.commit()
@@ -519,18 +518,44 @@ class ImportIn(BaseModel):
     items: list[ImportItem] = Field(max_length=50)
 
 
+def phoenix_makeups(db: Session, c: Course, s: Semester, covered: set[date]) -> list[dict]:
+    """Recuperaciones: cada fecha de Phoenix que no es del horario se empareja con la clase más cercana del
+    horario que Phoenix no trae (esa clase se hizo ese otro día). Se rehacen dentro del rango que cubre Phoenix."""
+    lo, hi = min(covered), max(covered)
+    before = {(m.original, m.date) for m in c.makeups}
+    keep = [m for m in c.makeups if not lo <= m.date <= hi]
+    weekdays = {x.weekday for x in c.slots}
+    days = (lo + timedelta(i) for i in range((hi - lo).days + 1))
+    sched = {d for d in days if d.weekday() in weekdays}  # incluye feriados: también se recuperan
+    missing = sorted(sched - covered - {m.original for m in keep})
+    pairs = []
+    for d in sorted(covered - sched):
+        if not missing:
+            break
+        # la más cercana (empate: la anterior). Si no era esa, el conteo da igual: ninguna de las dos está en Phoenix
+        o = min(missing, key=lambda m: (abs((m - d).days), m))
+        missing.remove(o)
+        pairs.append((o, d))
+    c.makeups = keep + [Makeup(original=o, date=d) for o, d in pairs]
+    db.flush()
+    return [{"course": c.name, "original": o.isoformat(), "date": d.isoformat()} for o, d in pairs if (o, d) not in before]
+
+
 @router.post("/absences/import")
 def import_absences(body: ImportIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Registro oficial (Phoenix): en los días que trae, manda sobre lo marcado a mano."""
     added = removed = 0
-    skipped = []
+    skipped, makeups = [], []
     antes = quedan_por_ramo(db, user)
     for it in body.items:
         c = get_owned(db, Course, it.course_id, user)
         s = db.get(Semester, c.semester_id)
-        off = {x.date for x in s.no_class_days}
+        covered = {d for d in it.absent + it.present if s.start_date <= d <= s.end_date}
+        if covered and c.slots:
+            makeups += phoenix_makeups(db, c, s, covered)
+        p = load_plan(db, s)
         for d, absent in [(d, True) for d in it.absent] + [(d, False) for d in it.present]:
-            slots = [x for x in c.slots if x.weekday == d.weekday()] if s.start_date <= d <= s.end_date and d not in off else []
+            slots = [x for x in c.slots if d in p.dates[x.id]]
             if not slots and absent:
                 skipped.append({"course": c.name, "date": d.isoformat()})  # ej: clase recuperativa en otro día
             for x in slots:
@@ -543,7 +568,7 @@ def import_absences(body: ImportIn, user: User = Depends(current_user), db: Sess
                     removed += 1
     db.commit()
     alertar_faltas(db, user, antes)
-    return {"added": added, "removed": removed, "skipped": skipped}
+    return {"added": added, "removed": removed, "skipped": skipped, "makeups": makeups}
 
 
 @router.get("/semesters/{id}/summary")
@@ -552,8 +577,8 @@ def summary(id: int, today: date = Depends(today_param), user: User = Depends(cu
     p = load_plan(db, s)
     full = semester_out(s, full=True)
     res = calc.summarize(p, today)
-    slots = {c["id"]: c["slots"] for c in full["courses"]}
-    res["courses"] = [c | {"slots": slots[c["id"]]} for c in res["courses"]]
+    extra = {c["id"]: {"slots": c["slots"], "makeups": c["makeups"]} for c in full["courses"]}
+    res["courses"] = [c | extra[c["id"]] for c in res["courses"]]
     return res | {
         "semester": semester_out(s),
         "no_class_days": full["no_class_days"],
@@ -869,7 +894,7 @@ def cron_daily(key: str = "", today: date | None = None, db: Session = Depends(g
         uid, p = s.user_id, load_plan(db, s)
         res = calc.summarize(p, today)
         # ramos de hoy que aún no marca como falta (si ya marcó todo, o era falta planeada por un tope, no pregunta por esos)
-        hoy = [c.name for c in s.courses if any(x.weekday == today.weekday() and (x.id, today) not in p.absences for x in c.slots)]
+        hoy = [c.name for c in s.courses if any(today in p.dates[x.id] and (x.id, today) not in p.absences for x in c.slots)]
         if hoy and res["calendar"].get(today.isoformat(), "gris") != "gris":
             push.notify(db, [uid], "¿Faltaste a alguna clase hoy?", f"Hoy tuviste {', '.join(hoy)}. Si faltaste, márcalo en un toque.",
                         "/#inicio", key=f"diario:{today}")

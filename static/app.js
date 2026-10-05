@@ -164,6 +164,11 @@ const clashes = (courses) => {
     .filter((b) => b.weekday === a.weekday && b.c.id !== a.c.id && a.start_time < b.end_time && b.start_time < a.end_time).map((b) => [a, b]));
 };
 
+// clases de un día: la clase recuperada sale de su día original y aparece el día en que se hizo
+const slotsOn = (courses, d) => courses.flatMap((c) => c.slots
+  .filter((x) => (x.weekday === weekdayOf(d) && !c.makeups.some((m) => m.original === d)) || c.makeups.some((m) => m.date === d && weekdayOf(m.original) === x.weekday))
+  .map((x) => ({ ...x, c }))).sort((a, b) => a.start_time.localeCompare(b.start_time));
+
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
@@ -176,6 +181,7 @@ function courseCard(c) {
       <div class="mt-2 flex items-baseline gap-2"><span data-quedan class="text-4xl font-bold ${tone}">${c.quedan}</span><span class="text-sm text-slate-600">${msg}</span></div>
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
+      ${c.makeups.map((m) => `<p class="mt-2 text-xs text-slate-500">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</p>`).join("")}
       ${c.ir_seguido ? `<p class="mt-2 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">💪 Ve a ${c.ir_seguido.clases === 1 ? "la próxima clase" : `las próximas ${c.ir_seguido.clases} clases`} (hasta el ${shortDate(c.ir_seguido.hasta)}) y después puedes faltar a ${c.ir_seguido.luego === 1 ? "la que queda" : `las ${c.ir_seguido.luego} que quedan`}</p>` : ""}
     </article>`;
 }
@@ -250,8 +256,7 @@ async function inicio(v) {
           const marked = new Set(s.absences.filter((a) => a.date === d).map((a) => a.slot_id));
           return `
         <h3 class="mt-3 text-sm font-semibold text-slate-600">${dayLabel(d)}</h3>
-        <ul class="mt-1 space-y-2">${s.courses.flatMap((c) => c.slots.filter((x) => x.weekday === weekdayOf(d)).map((x) => ({ ...x, c })))
-          .sort((a, b) => a.start_time.localeCompare(b.start_time)).map((x) => `
+        <ul class="mt-1 space-y-2">${slotsOn(s.courses, d).map((x) => `
           <li><button data-quick="${d}" data-slot-id="${x.id}" aria-pressed="${marked.has(x.id)}" class="flex w-full items-center gap-3 rounded-xl border p-3 text-left ${marked.has(x.id) ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200"}">
             <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs opacity-70">${x.c.kind === "L" ? "Lab" : "Teoría"} · ${x.start_time.slice(0, 5)}</span></span>
             <span class="text-sm font-semibold">${marked.has(x.id) ? "Faltaste · deshacer" : "Falté"}</span></button></li>`).join("")}
@@ -292,9 +297,7 @@ async function inicio(v) {
 }
 
 function openDay(s, day) {
-  const w = weekdayOf(day);
-  const slots = s.courses.flatMap((c) => c.slots.filter((x) => x.weekday === w).map((x) => ({ ...x, course: c })))
-    .sort((a, b) => a.start_time.localeCompare(b.start_time));
+  const slots = slotsOn(s.courses, day);
   const marked = new Set(s.absences.filter((a) => a.date === day).map((a) => a.slot_id));
   const events = s.events.filter((e) => e.date === day);
   const past = day < today();
@@ -309,7 +312,7 @@ function openDay(s, day) {
       <ul class="mt-2 space-y-2">${slots.map((x) => `
         <li><label class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 p-3">
           <input type="checkbox" data-slot="${x.id}" ${marked.has(x.id) ? "checked" : ""} class="h-5 w-5 accent-indigo-600">
-          <span class="flex-1"><span class="font-medium">${esc(x.course.name)}</span> <span class="text-xs text-slate-500">${x.course.kind === "L" ? "Lab" : "Teoría"}</span></span>
+          <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs text-slate-500">${x.c.kind === "L" ? "Lab" : "Teoría"}</span></span>
           <span class="text-xs text-slate-500">${x.start_time}–${x.end_time}</span></label></li>`).join("")}
       </ul>
       <div class="mt-4 grid grid-cols-2 gap-2">
@@ -909,7 +912,8 @@ async function importar(v, arg) {
     if (!items.length) { toast("Elige al menos un ramo", true); return; }
     const r = await api("POST", "/absences/import", { items });
     toast(`Listo: ${r.added} falta${r.added === 1 ? "" : "s"} nueva${r.added === 1 ? "" : "s"}${r.removed ? `, ${r.removed} corregida${r.removed === 1 ? "" : "s"}` : ""}`);
-    if (r.skipped.length) toast(`No calzan con tu horario (¿clase recuperativa?): ${r.skipped.map((x) => `${x.course} ${shortDate(x.date)}`).join(", ")}`, true);
+    if (r.makeups.length) toast(`Recuperaciones: ${r.makeups.map((x) => `${x.course} del ${shortDate(x.original)} al ${shortDate(x.date)}`).join(", ")}`);
+    if (r.skipped.length) toast(`No calzan con tu horario: ${r.skipped.map((x) => `${x.course} ${shortDate(x.date)}`).join(", ")}`, true);
     location.hash = "#inicio";
   };
 }

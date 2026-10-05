@@ -76,6 +76,16 @@ class Course(Base):
     kind: Mapped[str] = mapped_column(String(1))
     min_pct: Mapped[int] = mapped_column(Integer)
     slots: Mapped[list["Slot"]] = relationship(cascade="all, delete-orphan", order_by="Slot.weekday")
+    makeups: Mapped[list["Makeup"]] = relationship(cascade="all, delete-orphan", order_by="Makeup.date")
+
+
+class Makeup(Base):
+    """Recuperación: la clase del ramo del día `original` se hizo el día `date` (lo detecta la importación de Phoenix)."""
+    __tablename__ = "makeups"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    course_id: Mapped[int] = _fk("courses.id")
+    original: Mapped[dt.date] = mapped_column(Date)
+    date: Mapped[dt.date] = mapped_column(Date)
 
 
 class Slot(Base):

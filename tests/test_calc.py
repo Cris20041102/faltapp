@@ -104,3 +104,16 @@ def test_ir_seguido_y_luego_faltar_todo():
     assert s["courses"][1]["ir_seguido"] is None and s["ir_seguido"] is None
     assert summarize(Plan(date(2026, 8, 10), date(2026, 10, 16), set(), [Course(1, "BD", "T", 60)], [Slot(1, 1, 2)]),
                      date(2026, 9, 23))["ir_seguido"] is None  # ya puede faltar a todo: eso lo dice el otro aviso
+
+
+def test_recuperacion_mueve_la_clase():
+    """BDL (miércoles) se recuperó el sábado 10/10 en vez del miércoles 7/10: el total no cambia."""
+    dias = summarize(uls(), date(2026, 10, 12))["days"]["total"]
+    p = uls()
+    p.moves.add((7, date(2026, 10, 7), date(2026, 10, 10)))
+    p.absences |= {(11, date(2026, 10, 10)), (11, date(2026, 10, 7))}  # la del 7 ya no cuenta: ese día no hubo clase
+    s = summarize(p, date(2026, 10, 12))
+    bdl = next(c for c in s["courses"] if c["name"] == "BDL")
+    assert (bdl["total"], bdl["reales"]) == (16, 1)
+    assert (s["calendar"]["2026-10-10"], s["calendar"]["2026-10-07"]) == ("falta", "gris")
+    assert s["days"]["total"] == dias

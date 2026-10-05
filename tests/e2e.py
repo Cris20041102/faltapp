@@ -256,6 +256,28 @@ def main():
             day.click()
             page.evaluate("location.hash = '#agenda'")
             expect(page.locator("#dlg")).not_to_have_attribute("open", "")
+
+            # recuperación: Phoenix trae el sábado 26/9 y no el miércoles 23/9 → esa clase se hizo el sábado
+            r = page.evaluate("""async () => {
+              const h = { "Content-Type": "application/json", Authorization: "Bearer " + localStorage.getItem("token") };
+              const sems = await fetch("/api/semesters", { headers: h }).then((r) => r.json());
+              const full = await fetch(`/api/semesters/${sems.find((s) => s.active).id}`, { headers: h }).then((r) => r.json());
+              const id = full.courses.find((c) => c.name === "Bases de Datos").id;
+              const items = [{ course_id: id, absent: ["2026-09-26"], present: ["2026-09-09", "2026-09-30"] }];
+              return fetch("/api/absences/import", { method: "POST", headers: h, body: JSON.stringify({ items }) }).then((r) => r.json());
+            }""")
+            assert r["makeups"] == [{"course": "Bases de Datos", "original": "2026-09-23", "date": "2026-09-26"}], r
+            page.goto(URL + "/#inicio")
+            page.reload()
+            expect(page.locator("[data-course]").filter(has_text="Bases de Datos")).to_contain_text("Clase del 23/09 recuperada el sábado 26 de septiembre")
+            sab = page.locator('[data-date="2026-09-26"]')
+            for _ in range(12):
+                if sab.count():
+                    break
+                page.locator("[data-month-next]" if page.locator("[data-date]").first.get_attribute("data-date") < "2026-09" else "[data-month-prev]").click()
+            sab.click()
+            expect(page.locator("#dlg [data-slot]")).to_have_count(1)
+            expect(page.locator("#dlg [data-slot]")).to_be_checked()  # faltó a la recuperación
             assert not errors, errors
             sw_takeover(b)
             b.close()
