@@ -109,8 +109,8 @@ function calendar(el, key, colors, range, onPick, marks = new Set()) {
     const k = `${m}-${String(d).padStart(2, "0")}`;
     const c = colors[k];
     const ring = (k === today() ? " ring-2 ring-indigo-500 ring-offset-1" : "") + (marks.has(k) ? " relative after:absolute after:right-1 after:top-1 after:h-2 after:w-2 after:rounded-full after:bg-red-600 after:ring-2 after:ring-white" : "");
-    cells.push(c && c !== "gris" && onPick
-      ? `<button data-date="${k}" title="${COLOR[c].label}" class="aspect-square rounded-lg text-sm font-semibold ${COLOR[c].cls}${ring}">${d}</button>`
+    cells.push(c && onPick // también los días sin clases: ahí se anota una clase recuperativa
+      ? `<button data-date="${k}" title="${COLOR[c].label}" class="aspect-square rounded-lg text-sm ${c === "gris" ? "" : "font-semibold"} ${COLOR[c].cls}${ring}">${d}</button>`
       : `<div ${c ? `data-date="${k}"` : ""} title="${c ? COLOR[c].label : ""}" class="grid aspect-square place-items-center rounded-lg text-sm ${c ? COLOR[c].cls : "text-slate-300"}${ring}">${d}</div>`);
   }
   el.innerHTML = `
@@ -121,8 +121,8 @@ function calendar(el, key, colors, range, onPick, marks = new Set()) {
     </div>
     <div class="mb-1 grid grid-cols-7 gap-1 text-center text-xs font-medium text-slate-400">${["L", "M", "M", "J", "V", "S", "D"].map((d) => `<div>${d}</div>`).join("")}</div>
     <div class="grid grid-cols-7 gap-1">${cells.join("")}</div>`;
-  $("[data-month-prev]", el).onclick = () => { calMonths[key] = shiftMonth(m, -1); calendar(el, key, colors, range, onPick); };
-  $("[data-month-next]", el).onclick = () => { calMonths[key] = shiftMonth(m, 1); calendar(el, key, colors, range, onPick); };
+  $("[data-month-prev]", el).onclick = () => { calMonths[key] = shiftMonth(m, -1); calendar(el, key, colors, range, onPick, marks); };
+  $("[data-month-next]", el).onclick = () => { calMonths[key] = shiftMonth(m, 1); calendar(el, key, colors, range, onPick, marks); };
   if (onPick) $$("button[data-date]", el).forEach((b) => (b.onclick = () => onPick(b.dataset.date)));
 }
 
@@ -182,7 +182,7 @@ function courseCard(c) {
       <div class="mt-2 flex items-baseline gap-2"><span data-quedan class="text-4xl font-bold ${tone}">${c.quedan}</span><span class="text-sm text-slate-600">${msg}</span></div>
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
-      ${c.makeups.map((m) => `<p class="mt-2 text-xs text-slate-500">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</p>`).join("")}
+      ${c.makeups.map((m) => `<p class="mt-2 flex items-center gap-2 text-xs text-slate-500"><span class="flex-1">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</span><button data-unmakeup="${m.id}" class="h-7 w-7 shrink-0 rounded-full" aria-label="Quitar recuperación del ${shortDate(m.date)}">&#10005;</button></p>`).join("")}
       ${c.ir_seguido ? `<p class="mt-2 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">💪 Ve a ${c.ir_seguido.clases === 1 ? "la próxima clase" : `las próximas ${c.ir_seguido.clases} clases`} (hasta el ${shortDate(c.ir_seguido.hasta)}) y después puedes faltar a ${c.ir_seguido.luego === 1 ? "la que queda" : `las ${c.ir_seguido.luego} que quedan`}</p>` : ""}
     </article>`;
 }
@@ -294,6 +294,7 @@ async function inicio(v) {
     render();
   }));
   $$("[data-tope-turno]", v).forEach((b) => (b.onclick = () => { store.set(b.dataset.topeTurno, "turno"); render(); }));
+  $$("[data-unmakeup]", v).forEach((b) => (b.onclick = async () => { await api("DELETE", `/makeups/${b.dataset.unmakeup}`); render(); }));
   calendar($("#cal", v), "home", s.calendar, { start: s.semester.start_date, end: s.semester.end_date }, (d) => openDay(s, d), tests);
 }
 
@@ -305,10 +306,11 @@ function openDay(s, day) {
   openDialog(`
     <div class="p-5">
       <div class="flex items-start justify-between">
-        <div><h2 class="h2">${longDate(day)}</h2><p class="muted">${COLOR[s.calendar[day]].label}${past ? "" : " · futura: queda como falta planeada"}</p></div>
+        <div><h2 class="h2">${longDate(day)}</h2><p class="muted">${COLOR[s.calendar[day]].label}${past || !slots.length ? "" : " · futura: queda como falta planeada"}</p></div>
         <button data-close class="btn h-9 w-9 !p-0" aria-label="Cerrar">&#10005;</button>
       </div>
       ${events.map((e) => `<div class="mt-3 rounded-xl ${e.kind === "prueba" ? "bg-red-50 text-red-800" : "bg-sky-50 text-sky-800"} px-3 py-2 text-sm"><b>${KINDS[e.kind]}</b> · ${esc(e.title)}${e.time ? ` · ${e.time}` : ""}</div>`).join("")}
+      ${slots.length ? `
       <p class="mt-4 text-sm font-medium text-slate-600">Marca las clases a las que ${past ? "faltaste" : "vas a faltar"}:</p>
       <ul class="mt-2 space-y-2">${slots.map((x) => `
         <li><label class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 p-3">
@@ -319,8 +321,17 @@ function openDay(s, day) {
       <div class="mt-4 grid grid-cols-2 gap-2">
         <button data-all class="btn-primary">Faltar todo el día</button>
         <button data-none class="btn">Quitar faltas</button>
-      </div>
+      </div>` : ""}
       <a href="#agenda/${day}" class="mt-4 block text-center text-sm font-medium text-indigo-600">+ Agregar prueba o evento este día</a>
+      ${s.courses.length ? `
+      <details class="mt-4 rounded-xl border border-fg/10 p-3">
+        <summary class="cursor-pointer text-sm font-medium text-fg">🔁 ¿Hubo clase recuperativa este día?</summary>
+        <form data-makeup class="mt-3 space-y-3">
+          <label class="field">Ramo<select class="input" name="course">${s.courses.map((c) => `<option value="${c.id}">${esc(c.name)} (${c.kind === "L" ? "Lab" : "Teoría"})</option>`).join("")}</select></label>
+          <label class="field">Recupera la clase del<select class="input" name="original"></select></label>
+          <button class="btn-primary w-full">Guardar recuperación</button>
+        </form>
+      </details>` : ""}
     </div>`, (d) => {
     const warn = (r) => r?.warnings?.forEach((m) => toast("⚠ " + m));
     $$("[data-slot]", d).forEach((cb) => (cb.onchange = async () => {
@@ -329,8 +340,25 @@ function openDay(s, day) {
       } catch { cb.checked = !cb.checked; }
       render();
     }));
-    $("[data-all]", d).onclick = async () => { warn(await api("POST", "/absences", { date: day })); closeDialog(); render(); };
-    $("[data-none]", d).onclick = async () => { await api("DELETE", "/absences", { date: day }); closeDialog(); render(); };
+    if (slots.length) {
+      $("[data-all]", d).onclick = async () => { warn(await api("POST", "/absences", { date: day })); closeDialog(); render(); };
+      $("[data-none]", d).onclick = async () => { await api("DELETE", "/absences", { date: day }); closeDialog(); render(); };
+    }
+    const f = $("[data-makeup]", d);
+    if (f) { // clases de ese ramo que se pudieron mover a este día, la más cercana primero
+      const fill = () => (f.original.innerHTML = Object.keys(s.calendar)
+        .filter((x) => x !== day && slotsOn(s.courses, x).some((y) => y.c.id === Number(f.course.value)))
+        .sort((a, b) => Math.abs(parse(a) - parse(day)) - Math.abs(parse(b) - parse(day)) || a.localeCompare(b))
+        .map((x) => `<option value="${x}">${longDate(x)}</option>`).join(""));
+      f.course.onchange = fill;
+      fill();
+      f.onsubmit = async (e) => {
+        e.preventDefault();
+        await api("POST", `/courses/${f.course.value}/makeups`, { original: f.original.value, date: day });
+        toast("Recuperación guardada");
+        closeDialog(); render();
+      };
+    }
     $$("a", d).forEach((a) => a.addEventListener("click", closeDialog));
   });
 }

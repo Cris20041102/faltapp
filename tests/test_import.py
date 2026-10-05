@@ -48,3 +48,28 @@ def test_importar_recuperacion(client):
     assert client.request("DELETE", "/api/absences", headers=h, json={"date": "2026-09-12"}).status_code == 204
     assert client.post("/api/absences", headers=h, json={"date": "2026-09-09"}).status_code == 400  # ya no hay clase
     assert summary(client, h, s["id"])["courses"][0]["reales"] == 0
+
+
+def test_recuperacion_a_mano(client):
+    """Sin Phoenix: la clase del miércoles 7/10 se hizo el sábado 10/10."""
+    h = register(client)
+    s = new_semester(client, h)
+    c = new_course(client, h, s["id"])  # miércoles: 17 clases
+    url = f"/api/courses/{c['id']}/makeups"
+    assert client.post(url, headers=h, json={"original": "2026-10-08", "date": "2026-10-10"}).status_code == 400  # jueves: no hay clase
+    assert client.post(url, headers=h, json={"original": "2026-10-07", "date": "2026-12-20"}).status_code == 400  # fuera del semestre
+    assert client.post(url, headers=register(client, "beto"), json={"original": "2026-10-07", "date": "2026-10-10"}).status_code == 404
+    r = client.post(url, headers=h, json={"original": "2026-10-07", "date": "2026-10-10"})
+    assert r.status_code == 200, r.text
+    assert [(m["original"], m["date"]) for m in r.json()["makeups"]] == [("2026-10-07", "2026-10-10")]
+    assert client.post(url, headers=h, json={"original": "2026-10-07", "date": "2026-10-11"}).status_code == 400  # ya se movió
+    client.post("/api/absences", headers=h, json={"date": "2026-10-10"})  # se puede marcar la falta el sábado
+    sm = summary(client, h, s["id"])
+    assert (sm["courses"][0]["total"], sm["calendar"]["2026-10-07"], sm["calendar"]["2026-10-10"]) == (17, "gris", "falta")
+    # Phoenix no trae ese sábado: la recuperación a mano se queda
+    client.post("/api/absences/import", headers=h, json={"items": [{"course_id": c["id"], "present": ["2026-09-30", "2026-10-14"]}]})
+    mid = summary(client, h, s["id"])["courses"][0]["makeups"][0]["id"]
+    assert client.delete(f"/api/makeups/{mid}", headers=register(client, "carla")).status_code == 404
+    assert client.delete(f"/api/makeups/{mid}", headers=h).status_code == 204
+    sm = summary(client, h, s["id"])
+    assert (sm["courses"][0]["makeups"], sm["calendar"]["2026-10-10"]) == ([], "gris")

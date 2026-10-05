@@ -520,10 +520,11 @@ class ImportIn(BaseModel):
 
 def phoenix_makeups(db: Session, c: Course, s: Semester, covered: set[date]) -> list[dict]:
     """Recuperaciones: cada fecha de Phoenix que no es del horario se empareja con la clase más cercana del
-    horario que Phoenix no trae (esa clase se hizo ese otro día). Se rehacen dentro del rango que cubre Phoenix."""
+    horario que Phoenix no trae (esa clase se hizo ese otro día). Las que caen en fechas que Phoenix trae se rehacen;
+    las demás (ej. anotadas a mano) se mantienen."""
     lo, hi = min(covered), max(covered)
     before = {(m.original, m.date) for m in c.makeups}
-    keep = [m for m in c.makeups if not lo <= m.date <= hi]
+    keep = [m for m in c.makeups if m.date not in covered]
     weekdays = {x.weekday for x in c.slots}
     days = (lo + timedelta(i) for i in range((hi - lo).days + 1))
     sched = {d for d in days if d.weekday() in weekdays}  # incluye feriados: también se recuperan
@@ -539,6 +540,37 @@ def phoenix_makeups(db: Session, c: Course, s: Semester, covered: set[date]) -> 
     c.makeups = keep + [Makeup(original=o, date=d) for o, d in pairs]
     db.flush()
     return [{"course": c.name, "original": o.isoformat(), "date": d.isoformat()} for o, d in pairs if (o, d) not in before]
+
+
+class MakeupIn(BaseModel):
+    original: date
+    date: date
+
+
+@router.post("/courses/{id}/makeups")
+def add_makeup(id: int, body: MakeupIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Recuperación anotada a mano: la clase del día `original` se hizo el día `date`."""
+    c = get_owned(db, Course, id, user)
+    s = db.get(Semester, c.semester_id)
+    p = load_plan(db, s)
+    if not any(body.original in p.dates[x.id] for x in c.slots):
+        raise HTTPException(400, "Ese día el ramo no tenía clase")
+    if not s.start_date <= body.date <= s.end_date or body.date == body.original:
+        raise HTTPException(400, "La recuperación tiene que ser otro día del semestre")
+    c.makeups.append(Makeup(original=body.original, date=body.date))
+    db.commit()
+    return course_out(c)
+
+
+@router.delete("/makeups/{id}", status_code=204)
+def delete_makeup(id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    m = db.get(Makeup, id)
+    if not m:
+        raise HTTPException(404, "No encontrado")
+    get_owned(db, Course, m.course_id, user)
+    db.delete(m)
+    db.commit()
+    return Response(status_code=204)
 
 
 @router.post("/absences/import")

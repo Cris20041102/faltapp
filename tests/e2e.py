@@ -300,6 +300,17 @@ def main():
             sab.click()
             expect(page.locator("#dlg [data-slot]")).to_have_count(1)
             expect(page.locator("#dlg [data-slot]")).to_be_checked()  # faltó a la recuperación
+            # quitarla y anotarla a mano desde el mismo día
+            page.locator("#dlg [data-close]").click()
+            bd = page.locator("[data-course]").filter(has_text="Bases de Datos")
+            page.get_by_role("button", name="Quitar recuperación del 26/09").click()
+            expect(bd).not_to_contain_text("recuperada")
+            sab.click()
+            expect(page.locator("#dlg [data-slot]")).to_have_count(0)
+            page.get_by_text("¿Hubo clase recuperativa este día?").click()
+            expect(page.locator("#dlg select[name=original] option").first).to_have_text("Miércoles 23 de septiembre")  # la más cercana
+            page.get_by_role("button", name="Guardar recuperación").click()
+            expect(bd).to_contain_text("Clase del 23/09 recuperada el sábado 26 de septiembre")
             assert not errors, errors
             sw_takeover(b)
             b.close()
