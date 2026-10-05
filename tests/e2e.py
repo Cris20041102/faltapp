@@ -186,8 +186,13 @@ def main():
             page.reload()
             expect(page.get_by_role("button", name="Oscuro")).to_have_attribute("aria-pressed", "true")
             bg(noche)
+            # las opciones de un <select> con fondo y texto propios (si no, en Windows salen blanco sobre blanco)
+            opt = lambda fondo, texto: page.wait_for_function(
+                f"(o => getComputedStyle(o).backgroundColor === '{fondo}' && getComputedStyle(o).color === '{texto}')(document.querySelector('select option'))", timeout=3000)
+            opt("rgb(18, 10, 36)", "rgb(255, 255, 255)")
             page.get_by_role("button", name="Automático").click()
             bg(claro)
+            opt("rgb(255, 255, 255)", "rgb(12, 6, 22)")
             expect(page.locator("html")).not_to_have_attribute("data-theme", "dark")
 
             # importar desde Phoenix con el marcador; en los días que Phoenix registró, manda Phoenix

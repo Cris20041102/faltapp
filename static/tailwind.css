@@ -6,6 +6,8 @@
 
 @layer base {
   :root { color-scheme: var(--scheme); background-color: rgb(var(--canvas)); } /* colores por modo: tailwind.config.js */
+  /* la lista de un <select> se dibuja aparte: con el fondo de vidrio (transparente) Chrome en Windows la pinta blanca */
+  option { background-color: var(--sheet); color: rgb(var(--fg)); }
   /* brillo violeta que sube desde abajo (capa fija aparte: iPhone no soporta background-attachment: fixed) */
   body::before {
     content: "";
