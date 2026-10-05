@@ -27,7 +27,7 @@ class User(Base):
     career: Mapped[str] = mapped_column(String(60), default="", server_default="")
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(60), default="", server_default="")
-    banner_color: Mapped[str] = mapped_column(String(7), default="#4f46e5", server_default="#4f46e5")
+    banner_color: Mapped[str] = mapped_column(String(7), default="#713dff", server_default="#713dff")
     avatar: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True, deferred=True)  # solo se carga al pedir la foto
     avatar_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
     avatar_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")

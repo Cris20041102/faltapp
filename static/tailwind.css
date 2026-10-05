@@ -1,17 +1,58 @@
 /* Fuente de estilos. Tras cambiar clases en index.html/app.js, regenerar app.css:
-   npx tailwindcss@3 -i static/tailwind.css -o static/app.css --content 'static/*.{html,js}' --minify */
+   npx tailwindcss@3 -c tailwind.config.js -i static/tailwind.css -o static/app.css --minify */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+@layer base {
+  :root { color-scheme: var(--scheme); background-color: rgb(var(--canvas)); } /* colores por modo: tailwind.config.js */
+  /* brillo violeta que sube desde abajo (capa fija aparte: iPhone no soporta background-attachment: fixed) */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    background:
+      radial-gradient(75% 40% at 50% 108%, rgb(113 61 255 / var(--g1)), transparent 70%),
+      radial-gradient(55% 22% at 50% 102%, rgb(183 164 251 / var(--g2)), transparent 70%),
+      radial-gradient(60% 25% at 80% -6%, rgb(133 98 255 / var(--g3)), transparent 70%);
+  }
+}
+
 @layer components {
-  .card { @apply bg-white rounded-2xl border border-slate-200 p-4 shadow-sm; }
-  .btn { @apply inline-flex items-center justify-center gap-1 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-medium hover:bg-slate-50 active:scale-[.98] disabled:opacity-40; }
-  .btn-primary { @apply btn border-indigo-600 bg-indigo-600 text-white hover:bg-indigo-700; }
-  .btn-danger { @apply btn border-red-200 text-red-600 hover:bg-red-50; }
+  .card { @apply rounded-2xl border border-fg/10 bg-surface p-4 backdrop-blur-sm; }
+  .btn { @apply inline-flex items-center justify-center gap-1 rounded-full border border-fg/10 bg-surface px-4 py-2 text-sm font-medium text-fg hover:bg-fg/5 active:scale-[.98] disabled:opacity-40; }
+  .btn-primary { @apply btn border-transparent bg-indigo-500 text-white shadow-[0_0_24px_rgb(113_61_255/.45)] hover:bg-indigo-600; }
+  .btn-danger { @apply btn border-red-500/30 text-red-600 hover:bg-red-500/10; }
   .field { @apply block text-sm font-medium text-slate-600; }
-  .input { @apply mt-1 block w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-base text-slate-900 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-200; }
-  .h1 { @apply text-2xl font-bold text-slate-900; }
-  .h2 { @apply text-lg font-semibold text-slate-900; }
+  .input { @apply mt-1 block w-full rounded-xl border border-fg/10 bg-surface px-3 py-2.5 text-base text-fg placeholder:text-slate-400 focus:border-indigo-500 focus:outline-none focus:ring-2 focus:ring-indigo-500/30; }
+  .h1 { @apply font-display text-[28px] font-bold leading-tight tracking-[-0.02em] text-fg; }
+  .h2 { @apply text-lg font-semibold tracking-tight text-fg; }
   .muted { @apply text-sm text-slate-500; }
+}
+
+/* Movimiento al estilo iOS: corto, suave y con un leve desenfoque. Fuera de @layer para que siempre se incluya. */
+:root { --ease-ios: cubic-bezier(.32, .72, 0, 1); }
+body { padding-bottom: env(safe-area-inset-bottom); }
+button, a { -webkit-tap-highlight-color: transparent; transition: transform .2s var(--ease-ios), background-color .2s, border-color .2s, color .2s; }
+button:not(:disabled):active { transform: scale(.97); }
+/* cambio de pantalla: la anterior se desenfoca mientras carga la nueva, que entra de borrosa a nítida */
+#view { transition: opacity .2s ease-out, filter .2s ease-out; }
+#view.leaving { opacity: .4; filter: blur(6px); }
+#view.entering { animation: enter .45s var(--ease-ios); }
+@keyframes enter { from { opacity: 0; filter: blur(10px); transform: translateY(8px) scale(.99); } }
+/* diálogos como hoja de iOS: suben con resorte y el fondo se oscurece y desenfoca */
+dialog::backdrop { background: rgb(5 0 12 / .55); backdrop-filter: blur(4px); }
+dialog[open] { animation: sheet .45s var(--ease-ios); }
+dialog[open]::backdrop { animation: fade .3s ease-out; }
+@keyframes sheet { from { opacity: 0; filter: blur(4px); transform: translateY(24px) scale(.96); } }
+@keyframes fade { from { opacity: 0; } }
+/* avisos: entran desde arriba y se van desvaneciendo */
+.toast-in { animation: toast .4s var(--ease-ios); }
+.toast-out { opacity: 0; filter: blur(4px); transform: translateY(-8px) scale(.98); transition: all .25s ease-in; }
+@keyframes toast { from { opacity: 0; filter: blur(6px); transform: translateY(-12px) scale(.96); } }
+/* "Reducir movimiento" del teléfono: sin animaciones */
+@media (prefers-reduced-motion: reduce) {
+  *, ::before, ::after, ::backdrop { animation: none !important; transition: none !important; }
+  #view.leaving { opacity: 1; filter: none; }
 }

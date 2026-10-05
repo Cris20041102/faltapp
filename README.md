@@ -24,7 +24,7 @@ python tests/e2e.py  # navegador (Playwright + Chromium)
 `static/app.css` se genera desde `static/tailwind.css`. Si cambias clases en `index.html` o `app.js`:
 
 ```bash
-npx tailwindcss@3 -i static/tailwind.css -o static/app.css --content 'static/*.{html,js}' --minify
+npx tailwindcss@3 -c tailwind.config.js -i static/tailwind.css -o static/app.css --minify
 ```
 
 ## Deploy (gratis)

@@ -132,10 +132,12 @@ def main():
             tc.close()
 
             for _ in range(5):  # se borran para seguir con un horario conocido
+                n = page.locator("[data-slot]").count()
                 page.locator("[data-slot]").first.click()
                 page.get_by_role("button", name="Eliminar el ramo completo").click()
                 page.get_by_role("button", name="¿Seguro?").click()
-                expect(page.locator("#dlg")).not_to_have_attribute("open", "")  # esperar a que se cierre antes del siguiente
+                expect(page.locator("#dlg")).not_to_have_attribute("open", "")
+                expect(page.locator("[data-slot]")).not_to_have_count(n)  # esperar que se refresque: si no, se toca el ramo recién borrado
             expect(page.locator("[data-slot]")).to_have_count(0)
             page.get_by_role("button", name="Agregar clase el Miércoles").click()
             page.get_by_label("Nombre del ramo").fill("Bases de Datos")
@@ -170,6 +172,23 @@ def main():
             png.write_bytes(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="))
             page.get_by_label("Cambiar foto").set_input_files(str(png))
             expect(page.locator("#hdr img")).to_be_visible()
+
+            # apariencia: sigue el modo del dispositivo y se puede fijar a mano (queda guardado)
+            bg = lambda c: page.wait_for_function(f"getComputedStyle(document.documentElement).backgroundColor === '{c}'", timeout=3000)
+            noche, claro = "rgb(10, 1, 24)", "rgb(246, 244, 251)"
+            expect(page.get_by_role("button", name="Automático")).to_have_attribute("aria-pressed", "true")
+            page.emulate_media(color_scheme="dark")
+            bg(noche)
+            page.emulate_media(color_scheme="light")
+            bg(claro)
+            page.get_by_role("button", name="Oscuro").click()
+            bg(noche)  # elegido a mano manda sobre el dispositivo
+            page.reload()
+            expect(page.get_by_role("button", name="Oscuro")).to_have_attribute("aria-pressed", "true")
+            bg(noche)
+            page.get_by_role("button", name="Automático").click()
+            bg(claro)
+            expect(page.locator("html")).not_to_have_attribute("data-theme", "dark")
 
             # importar desde Phoenix con el marcador; en los días que Phoenix registró, manda Phoenix
             page.goto(URL + "/#importar")
@@ -242,11 +261,14 @@ def main():
             page.context.grant_permissions(["notifications"])
             reg = page.evaluate("navigator.serviceWorker.ready.then((r) => r.scope)")
             cdp = page.context.new_cdp_session(page)
-            cdp.send("ServiceWorker.enable")
-            regs = []
+            regs = []  # escuchar antes de activar: el evento puede llegar durante el enable
             cdp.on("ServiceWorker.workerRegistrationUpdated", lambda e: regs.extend(e["registrations"]))
-            page.wait_for_timeout(500)
-            rid = next(r["registrationId"] for r in regs if r["scopeURL"] == reg)
+            cdp.send("ServiceWorker.enable")
+            for _ in range(50):  # el evento de registro llega cuando llega: esperar hasta 5 s, no un tiempo fijo
+                rid = next((r["registrationId"] for r in regs if r["scopeURL"] == reg), None)
+                if rid:
+                    break
+                page.wait_for_timeout(100)
             cdp.send("ServiceWorker.deliverPushMessage", {"origin": URL, "registrationId": rid,
                                                           "data": '{"title": "📝 Mañana: Certamen 2", "body": "BD", "url": "/#agenda"}'})
             wait_notification(page, "📝 Mañana: Certamen 2")

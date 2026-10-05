@@ -23,9 +23,9 @@ const CALENDARS = [
 ];
 const COLOR = {
   verde: { cls: "bg-green-500 text-white", dot: "bg-green-500", label: "Puedes faltar" },
-  amarillo: { cls: "bg-yellow-400 text-slate-900", dot: "bg-yellow-400", label: "Justo en el límite" },
+  amarillo: { cls: "bg-yellow-400 text-night", dot: "bg-yellow-400", label: "Justo en el límite" },
   rojo: { cls: "bg-red-500 text-white", dot: "bg-red-500", label: "No puedes faltar" },
-  falta: { cls: "bg-slate-800 text-white", dot: "bg-slate-800", label: "Falta marcada" },
+  falta: { cls: "bg-fg text-canvas", dot: "bg-fg", label: "Falta marcada" },
   asistio: { cls: "bg-slate-200 text-slate-600", dot: "bg-slate-300", label: "Fuiste" },
   gris: { cls: "text-slate-400", dot: "bg-slate-100 border border-slate-300", label: "Sin clases" },
 };
@@ -42,10 +42,11 @@ let ME = null;
 
 function toast(msg, bad = false) {
   const el = document.createElement("div");
-  el.className = `pointer-events-auto max-w-sm rounded-xl px-4 py-2 text-sm font-medium shadow-lg ${bad ? "bg-red-600 text-white" : "bg-slate-900 text-white"}`;
+  el.className = `pointer-events-auto max-w-sm rounded-xl px-4 py-2 text-sm font-medium shadow-lg ${bad ? "bg-red-600 text-white" : "border border-white/10 bg-[#1a1030] text-white"}`;
   el.textContent = msg;
+  el.classList.add("toast-in");
   $("#toast").append(el);
-  setTimeout(() => el.remove(), 3500);
+  setTimeout(() => { el.classList.add("toast-out"); setTimeout(() => el.remove(), 250); }, 3500);
 }
 
 async function api(method, path, body, { quiet = false } = {}) {
@@ -134,11 +135,11 @@ function login(v) {
   const reg = loginMode === "register";
   v.innerHTML = `
     <div class="mx-auto max-w-sm pt-6">
-      <h1 class="h1 text-center">Falta con cabeza</h1>
+      <h1 class="h1 text-center text-4xl">Falta con <span class="bg-gradient-to-b from-indigo-700 to-indigo-500 bg-clip-text text-transparent">cabeza</span></h1>
       <p class="muted mt-1 text-center">Calcula cuántas clases puedes faltar y ponte de acuerdo con tus amigos.</p>
-      <div class="mt-6 grid grid-cols-2 rounded-xl bg-slate-200 p-1 text-sm font-medium">
-        <button data-mode="login" class="rounded-lg py-2 ${reg ? "" : "bg-white shadow"}">Entrar</button>
-        <button data-mode="register" class="rounded-lg py-2 ${reg ? "bg-white shadow" : ""}">Crear cuenta</button>
+      <div class="mt-6 grid grid-cols-2 rounded-full border border-fg/10 bg-surface p-1 text-sm font-medium text-fg">
+        <button data-mode="login" class="rounded-full py-2 ${reg ? "" : "bg-indigo-500 text-white"}">Entrar</button>
+        <button data-mode="register" class="rounded-full py-2 ${reg ? "bg-indigo-500 text-white" : ""}">Crear cuenta</button>
       </div>
       <form class="card mt-4 space-y-3">
         <label class="field">Usuario<input class="input" name="username" autocomplete="username" required autocapitalize="none"></label>
@@ -207,10 +208,10 @@ async function inicio(v) {
     const key = `tope-${a.id}-${b.id}`, goA = !pending(b) && pending(a) > 0, goB = !pending(a) && pending(b) > 0;
     const turno = !goA && !goB && store.get(key) === "turno", calm = goA || goB || turno;
     const opt = (go, skip, on) => `
-      <button data-tope-go="${go.id}" data-tope-skip="${skip.id}" data-switch="${pending(go) ? "" : 1}" aria-pressed="${on}" class="rounded-xl border p-3 text-left ${on ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200 bg-white text-slate-900"}">
+      <button data-tope-go="${go.id}" data-tope-skip="${skip.id}" data-switch="${pending(go) ? "" : 1}" aria-pressed="${on}" class="rounded-xl border p-3 text-left ${on ? "border-indigo-500 bg-indigo-500 text-white" : "border-fg/10 bg-surface text-fg"}">
         <span class="block font-medium">Voy a ${esc(go.c.name)}</span><span class="block text-xs opacity-80">${after(skip)}</span></button>`;
     return `
-      <section data-tope class="mt-4 rounded-2xl p-4 ${calm ? "border border-slate-200 bg-white" : "bg-amber-50 text-amber-900"}">
+      <section data-tope class="mt-4 rounded-2xl p-4 ${calm ? "border border-fg/10 bg-surface" : "border border-amber-500/30 bg-amber-50 text-amber-900"}">
         <h2 class="font-semibold">⚠️ Tope de horario · ${DAYS[a.weekday]} ${[a.start_time, b.start_time].sort()[0]}</h2>
         <p class="mt-1 text-sm">${goA || goB ? `Vas a ${esc((goA ? a : b).c.name)}; ${esc((goA ? b : a).c.name)} cuenta como falta en ese bloque.`
           : turno ? "Te turnas: cada semana marca en «¿Fuiste a clases?» a cuál faltaste."
@@ -237,7 +238,7 @@ async function inicio(v) {
     ${s.days.total ? `
       <section data-progress class="card mt-4">
         <h2 class="h2">Llevas ${s.days.done} de ${s.days.total} días de clases</h2>
-        <div class="mt-2 h-2 overflow-hidden rounded-full bg-slate-100"><div class="h-2 rounded-full bg-indigo-600" style="width:${Math.round((100 * s.days.done) / s.days.total)}%"></div></div>
+        <div class="mt-2 h-2 overflow-hidden rounded-full bg-fg/10"><div class="h-2 rounded-full bg-gradient-to-r from-indigo-500 to-indigo-700" style="width:${Math.round((100 * s.days.done) / s.days.total)}%"></div></div>
         <p class="mt-1 text-xs text-slate-500">${s.days.total - s.days.done ? `Quedan ${s.days.total - s.days.done} días de clases` : "Se terminaron las clases del semestre"}</p>
       </section>` : ""}
     ${s.ir_seguido ? `
@@ -257,7 +258,7 @@ async function inicio(v) {
           return `
         <h3 class="mt-3 text-sm font-semibold text-slate-600">${dayLabel(d)}</h3>
         <ul class="mt-1 space-y-2">${slotsOn(s.courses, d).map((x) => `
-          <li><button data-quick="${d}" data-slot-id="${x.id}" aria-pressed="${marked.has(x.id)}" class="flex w-full items-center gap-3 rounded-xl border p-3 text-left ${marked.has(x.id) ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200"}">
+          <li><button data-quick="${d}" data-slot-id="${x.id}" aria-pressed="${marked.has(x.id)}" class="flex w-full items-center gap-3 rounded-xl border p-3 text-left ${marked.has(x.id) ? "border-indigo-500 bg-indigo-500 text-white" : "border-fg/10 bg-surface"}">
             <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs opacity-70">${x.c.kind === "L" ? "Lab" : "Teoría"} · ${x.start_time.slice(0, 5)}</span></span>
             <span class="text-sm font-semibold">${marked.has(x.id) ? "Faltaste · deshacer" : "Falté"}</span></button></li>`).join("")}
         </ul>`;
@@ -539,7 +540,7 @@ const AV = { sm: "h-7 w-7 text-xs", md: "h-10 w-10 text-base", lg: "h-24 w-24 te
 const avatar = (u, size = "md") => u.avatar_url
   ? `<img src="${esc(u.avatar_url)}" alt="" class="${AV[size]} shrink-0 rounded-full bg-white object-cover">`
   : `<span class="grid ${AV[size]} shrink-0 place-items-center rounded-full bg-indigo-100 font-bold text-indigo-700">${esc(u.display_name[0]?.toUpperCase())}</span>`;
-const BANNERS = ["#4f46e5", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#db2777", "#7c3aed", "#334155"];
+const BANNERS = ["#713dff", "#0ea5e9", "#16a34a", "#f59e0b", "#ef4444", "#db2777", "#7c3aed", "#334155"];
 
 const profileCardHtml = (p) => `
   <div data-card>
@@ -608,6 +609,7 @@ async function perfil(v) {
       <button class="btn-primary col-span-2">Guardar perfil</button>
     </form>
     <section class="card mt-4"><h2 class="h2">🔔 Notificaciones</h2><div class="mt-2">${PUSH_CARD[pstate]}</div></section>
+    ${themeCard()}
     <a href="#semestre" class="btn mt-4 w-full">Semestre, fechas y feriados</a>
     <button data-logout class="mt-6 w-full text-center text-sm text-slate-500">Cerrar sesión</button>`;
   $("[data-profile]", v).onsubmit = async (e) => {
@@ -628,6 +630,7 @@ async function perfil(v) {
   if (del) del.onclick = async () => { await api("DELETE", "/me/avatar"); ME = await api("GET", "/me"); render(); };
   $("[data-logout]", v).onclick = logout;
   bindPush(v);
+  bindTheme(v);
 }
 
 // ---------- amigos ----------
@@ -984,8 +987,45 @@ const bindPush = (v) => {
   if (test) test.onclick = async () => { await api("POST", "/push/test"); toast("Enviada: debería llegarte en unos segundos"); };
 };
 
+// ---------- apariencia ----------
+// Automático sigue el modo claro/oscuro del dispositivo; Claro u Oscuro quedan guardados en este dispositivo
+const THEMES = { auto: "Automático", light: "Claro", dark: "Oscuro" };
+const DARK_OS = matchMedia("(prefers-color-scheme: dark)");
+function applyTheme() {
+  const t = store.get("theme");
+  if (t) document.documentElement.dataset.theme = t;
+  else delete document.documentElement.dataset.theme;
+  $('meta[name="theme-color"]').content = (t || (DARK_OS.matches ? "dark" : "light")) === "dark" ? "#0a0118" : "#f6f4fb";
+}
+DARK_OS.addEventListener("change", applyTheme);
+applyTheme();
+const themeCard = () => {
+  const cur = store.get("theme") || "auto";
+  return `
+    <section class="card mt-4"><h2 class="h2">🌗 Apariencia</h2>
+      <div class="mt-3 grid grid-cols-3 rounded-full border border-fg/10 bg-surface p-1 text-sm font-medium">${Object.entries(THEMES).map(([k, l]) => `
+        <button data-theme-pick="${k}" aria-pressed="${cur === k}" class="rounded-full py-2 ${cur === k ? "bg-indigo-500 text-white" : ""}">${l}</button>`).join("")}</div>
+      <p class="muted mt-2">Automático usa el modo claro u oscuro de tu dispositivo.</p>
+    </section>`;
+};
+const bindTheme = (v) => $$("[data-theme-pick]", v).forEach((b) => (b.onclick = () => {
+  const pick = () => {
+    store.set("theme", b.dataset.themePick === "auto" ? null : b.dataset.themePick);
+    applyTheme();
+    $$("[data-theme-pick]", v).forEach((x) => {
+      x.setAttribute("aria-pressed", x === b);
+      x.classList.toggle("bg-indigo-500", x === b);
+      x.classList.toggle("text-white", x === b);
+    });
+  };
+  // cambio con fundido suave donde el navegador lo permite
+  if (document.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) document.startViewTransition(pick);
+  else pick();
+}));
+
 // ---------- router ----------
 const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda };
+let shown = null; // pantalla que se ve ahora: solo se anima al cambiar de pantalla, no al refrescar la misma
 async function render() {
   const [name, arg] = location.hash.slice(1).split("/");
   const route = routes[name] ? name : token ? "inicio" : "login";
@@ -993,13 +1033,23 @@ async function render() {
   if (token && route === "login") { location.hash = "#inicio"; return; }
   $("#nav").classList.toggle("hidden", route === "login");
   $$("#nav [data-route]").forEach((a) => a.classList.toggle("text-indigo-600", a.dataset.route === route));
+  const v = $("#view"), changed = route !== shown;
+  if (changed && shown) v.classList.add("leaving"); // la pantalla anterior se desenfoca mientras carga la nueva
   try {
     if (token && !ME) ME = await api("GET", "/me");
     $("#hdr").innerHTML = ME ? `<a href="#perfil" class="flex items-center gap-2 opacity-95">${avatar(ME, "sm")}@${esc(ME.username)}</a>` : "";
-    await routes[route]($("#view"), arg);
+    await routes[route](v, arg);
     if (ME) { refreshBadge(); syncPush(); }
   } catch (e) {
     console.warn(e); // el error ya se mostró como toast
+  }
+  v.classList.remove("leaving");
+  if (changed) {
+    shown = route;
+    scrollTo(0, 0);
+    v.classList.remove("entering");
+    void v.offsetWidth; // reinicia la animación
+    v.classList.add("entering");
   }
 }
 
