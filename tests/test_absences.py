@@ -91,3 +91,19 @@ def test_patch_ramo_conserva_faltas(client):
         "name": "BD Lab 2", "slots": [sl, {"weekday": 3, "start_time": "16:15", "end_time": "17:45"}]})
     assert r.status_code == 200 and len(r.json()["slots"]) == 2
     assert summary(client, h, s["id"])["absences"] == [{"slot_id": sl["id"], "date": "2026-10-07"}]
+
+
+def test_tope_falta_a_lo_que_queda_del_bloque(client):
+    """Tope de horario: al elegir el otro ramo, todas las clases que quedan de este bloque quedan como falta."""
+    h, s, c = setup(client)
+    url = f"/api/slots/{c['slots'][0]['id']}/rest"
+    client.post("/api/absences", headers=h, json={"date": "2026-09-23"})  # falta pasada: no se toca
+    client.post("/api/absences", headers=h, json={"date": "2026-10-07"})  # ya marcada: no se duplica
+    assert client.post(url, headers=h, json={"since": "2026-09-30"}).status_code == 204
+    c0 = summary(client, h, s["id"])["courses"][0]
+    assert (c0["reales"], c0["planeadas"]) == (1, 10)  # 10 miércoles del 30/9 al 2/12
+    assert client.post(url, headers=h, json={"since": "2026-09-30", "absent": False}).status_code == 204
+    c0 = summary(client, h, s["id"])["courses"][0]
+    assert (c0["reales"], c0["planeadas"]) == (1, 0)
+    assert client.post(url, headers=register(client, "beto"), json={"since": "2026-09-30"}).status_code == 404
+    assert client.post("/api/slots/999/rest", headers=h, json={"since": "2026-09-30"}).status_code == 404

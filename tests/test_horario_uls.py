@@ -4,10 +4,11 @@ from app.horario_uls import parse
 from tests.conftest import new_semester, register
 
 PDF = (Path(__file__).parent / "fixtures" / "horario_uls_demo.pdf").read_bytes()
-EXPECTED = {
+EXPECTED = {  # jueves 11:30 y viernes 09:45 tienen tope de horario: van los dos ramos
     ("Eva. de Proyec.", "T"): [(0, "08:00", "09:30"), (4, "09:45", "11:15")],
-    ("Bas. de Datos I", "L"): [(2, "09:45", "11:15")],
+    ("Bas. de Datos I", "L"): [(2, "09:45", "11:15"), (4, "09:45", "11:15")],
     ("Bas. de Datos I", "T"): [(3, "11:30", "13:00")],
+    ("Inv. de Oper. I", "T"): [(3, "11:30", "13:00")],
     ("Progr. Avanzada", "L"): [(1, "14:30", "16:00")],
 }
 
@@ -29,7 +30,7 @@ def test_importar_crea_ramos(client):
     sid = new_semester(client, h)["id"]
     r = client.post(f"/api/semesters/{sid}/import-uls", headers={**h, "Content-Type": "application/pdf"}, content=PDF)
     assert r.status_code == 200, r.text
-    assert r.json() == {"created": 4, "skipped": 0}
+    assert r.json() == {"created": 5, "skipped": 0}
     courses = client.get(f"/api/semesters/{sid}", headers=h).json()["courses"]
     assert as_dict(courses) == EXPECTED
     assert {(c["kind"], c["min_pct"]) for c in courses} == {("T", 60), ("L", 70)}
@@ -40,7 +41,7 @@ def test_importar_dos_veces_no_duplica(client):
     sid = new_semester(client, h)["id"]
     url = f"/api/semesters/{sid}/import-uls"
     client.post(url, headers=h, content=PDF)
-    assert client.post(url, headers=h, content=PDF).json() == {"created": 0, "skipped": 4}
+    assert client.post(url, headers=h, content=PDF).json() == {"created": 0, "skipped": 5}
 
 
 def test_importar_archivo_invalido(client):

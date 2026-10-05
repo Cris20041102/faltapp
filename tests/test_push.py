@@ -144,3 +144,17 @@ def test_envio_se_descifra_como_en_el_celular(monkeypatch):
     claims = jwt.decode(token, server.public_key(), algorithms=["ES256"], audience="https://fcm.googleapis.com")
     assert claims["sub"].startswith("https://") and k == push.b64e(push.raw_public(server))
     assert headers["Content-Encoding"] == "aes128gcm" and headers["TTL"]
+
+
+def test_cron_diario_con_tope(client, sent, monkeypatch):
+    """Con un tope resuelto (un ramo marcado como falta), igual pregunta por las otras clases del día."""
+    monkeypatch.setenv("CRON_SECRET", "s3cr3t")
+    h = register(client)
+    subscribe(client, h, "cel")
+    s = new_semester(client, h)
+    bd = new_course(client, h, s["id"])
+    new_course(client, h, s["id"], name="Inv. de Oper. I", kind="T", min_pct=60)  # mismo bloque del miércoles
+    client.post(f"/api/slots/{bd['slots'][0]['id']}/rest", headers=h, json={"since": "2026-09-30"})
+    client.get("/api/cron/daily", params={"key": "s3cr3t", "today": "2026-09-30"})
+    p = next(p for _, p in sent if "¿Faltaste" in p["title"])
+    assert "Inv. de Oper. I" in p["body"] and "BD Lab" not in p["body"]

@@ -102,8 +102,36 @@ def main():
             page.goto(URL + "/#horario")
             page.get_by_label("Subir PDF de horario ULS").set_input_files(str(ROOT / "tests" / "fixtures" / "horario_uls_demo.pdf"))
             expect(page.get_by_text("Progr. Avanzada").first).to_be_visible()
-            expect(page.locator("[data-slot]")).to_have_count(5)  # 4 ramos, Eva. de Proyec. con 2 bloques
-            for _ in range(4):  # se borran para seguir con un horario conocido
+            expect(page.locator("[data-slot]")).to_have_count(7)  # 5 ramos; Eva. de Proyec. y BD Lab con 2 bloques
+            expect(page.get_by_text("Choca con")).to_have_count(4)  # 2 topes: jueves 11:30 y viernes 09:45
+
+            # topes en Inicio (1 de octubre): elegir a cuál ir, cambiar, deshacer, o turnarse
+            tc = b.new_context(viewport={"width": 390, "height": 844})
+            tc.clock.set_fixed_time("2026-10-01T12:00:00")
+            tp = tc.new_page()
+            tp.on("pageerror", lambda e: errors.append(str(e)))
+            tp.goto(URL)
+            tp.evaluate("t => localStorage.setItem('token', t)", page.evaluate("localStorage.getItem('token')"))
+            tp.goto(URL + "/?r=1#inicio")
+            jue = tp.locator("[data-tope]").filter(has_text="Jueves 11:30")
+            expect(tp.locator("[data-tope]")).to_have_count(2)
+            expect(jue).to_contain_text("¿A cuál vas?")
+            expect(jue.get_by_role("button", name="Voy a Inv. de Oper. I")).to_contain_text("Reprobarías Bas. de Datos I")  # su único bloque
+            jue.get_by_role("button", name="Voy a Inv. de Oper. I").click()
+            expect(jue).to_contain_text("Vas a Inv. de Oper. I; Bas. de Datos I cuenta como falta")
+            expect(jue.get_by_role("button", name="Voy a Inv. de Oper. I")).to_have_attribute("aria-pressed", "true")
+            tp.screenshot(path=str(ROOT / "e2e-tope.png"))
+            jue.get_by_role("button", name="Voy a Bas. de Datos I").click()  # cambia de opinión
+            expect(jue).to_contain_text("Vas a Bas. de Datos I; Inv. de Oper. I cuenta como falta")
+            jue.get_by_role("button", name="Voy a Bas. de Datos I").click()  # tocar la elegida la deshace
+            expect(jue).to_contain_text("¿A cuál vas?")
+            expect(tp.locator("[data-course]").filter(has_text="Inv. de Oper. I")).not_to_contain_text("planeas")
+            vie = tp.locator("[data-tope]").filter(has_text="Viernes 09:45")
+            vie.get_by_role("button", name="Me turno entre los dos").click()
+            expect(vie).to_contain_text("Te turnas")
+            tc.close()
+
+            for _ in range(5):  # se borran para seguir con un horario conocido
                 page.locator("[data-slot]").first.click()
                 page.get_by_role("button", name="Eliminar el ramo completo").click()
                 page.get_by_role("button", name="¿Seguro?").click()

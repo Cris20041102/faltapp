@@ -157,6 +157,13 @@ function login(v) {
 }
 
 // ---------- inicio ----------
+// tope de horario: pares de clases de ramos distintos que se pisan el mismo día
+const clashes = (courses) => {
+  const xs = courses.flatMap((c) => c.slots.map((x) => ({ ...x, c })));
+  return xs.flatMap((a, i) => xs.slice(i + 1)
+    .filter((b) => b.weekday === a.weekday && b.c.id !== a.c.id && a.start_time < b.end_time && b.start_time < a.end_time).map((b) => [a, b]));
+};
+
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
@@ -182,6 +189,31 @@ async function inicio(v) {
   // las 2 últimas jornadas con clases (hasta hoy): marcar una falta es 1 toque, sin buscar en el calendario
   const recent = Object.keys(s.calendar).filter((d) => d <= today() && s.calendar[d] !== "gris").sort().slice(-2).reverse();
   const dayLabel = (d) => (d === today() ? "Hoy" : d === iso(new Date(Date.now() - 864e5)) ? "Ayer" : longDate(d));
+  // topes: en ese bloque va a un ramo y el otro queda como falta desde hoy (o se turna y marca día a día)
+  const absent = new Set(s.absences.map((a) => `${a.slot_id}|${a.date}`));
+  const ahead = (x) => Object.keys(s.calendar).filter((d) => d >= today() && s.calendar[d] !== "gris" && weekdayOf(d) === x.weekday);
+  const pending = (x) => ahead(x).filter((d) => !absent.has(`${x.id}|${d}`)).length;
+  const after = (x) => { // cómo queda el ramo de x si deja de ir a ese bloque
+    const n = x.c.quedan - pending(x);
+    return n < 0 ? `Reprobarías ${esc(x.c.name)}` : n === 0 ? `${esc(x.c.name)} queda sin margen` : `${esc(x.c.name)}: te quedarían ${n} falta${n > 1 ? "s" : ""}`;
+  };
+  const tope = ([a, b]) => {
+    const key = `tope-${a.id}-${b.id}`, goA = !pending(b) && pending(a) > 0, goB = !pending(a) && pending(b) > 0;
+    const turno = !goA && !goB && store.get(key) === "turno", calm = goA || goB || turno;
+    const opt = (go, skip, on) => `
+      <button data-tope-go="${go.id}" data-tope-skip="${skip.id}" data-switch="${pending(go) ? "" : 1}" aria-pressed="${on}" class="rounded-xl border p-3 text-left ${on ? "border-slate-800 bg-slate-800 text-white" : "border-slate-200 bg-white text-slate-900"}">
+        <span class="block font-medium">Voy a ${esc(go.c.name)}</span><span class="block text-xs opacity-80">${after(skip)}</span></button>`;
+    return `
+      <section data-tope class="mt-4 rounded-2xl p-4 ${calm ? "border border-slate-200 bg-white" : "bg-amber-50 text-amber-900"}">
+        <h2 class="font-semibold">⚠️ Tope de horario · ${DAYS[a.weekday]} ${[a.start_time, b.start_time].sort()[0]}</h2>
+        <p class="mt-1 text-sm">${goA || goB ? `Vas a ${esc((goA ? a : b).c.name)}; ${esc((goA ? b : a).c.name)} cuenta como falta en ese bloque.`
+          : turno ? "Te turnas: cada semana marca en «¿Fuiste a clases?» a cuál faltaste."
+          : `${esc(a.c.name)} y ${esc(b.c.name)} son a la misma hora. ¿A cuál vas? El otro queda como falta en ese bloque desde hoy.`}</p>
+        <div class="mt-3 grid grid-cols-2 gap-2">${opt(a, b, goA)}${opt(b, a, goB)}</div>
+        ${calm ? "" : `<button data-tope-turno="${key}" class="mt-2 text-sm font-medium underline">Me turno entre los dos</button>`}
+      </section>`;
+  };
+  const topes = clashes(s.courses).filter(([a]) => ahead(a).length).sort(([a], [b]) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time));
   v.innerHTML = `
     <div class="flex items-end justify-between">
       <div><p class="muted">Semestre</p><h1 class="h1">${esc(sem.name)}</h1></div>
@@ -195,6 +227,7 @@ async function inicio(v) {
           ${pstate === "ios" ? `<a href="#perfil" class="btn mt-2">Cómo activarlas en iPhone</a>` : `<button data-push-on class="btn-primary mt-2">Activar</button>`}</div>
         <button data-push-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso">&#10005;</button>
       </section>` : ""}
+    ${topes.map(tope).join("")}
     ${s.days.total ? `
       <section data-progress class="card mt-4">
         <h2 class="h2">Llevas ${s.days.done} de ${s.days.total} días de clases</h2>
@@ -248,6 +281,13 @@ async function inicio(v) {
     r?.warnings?.forEach((m) => toast("⚠ " + m));
     render();
   }));
+  $$("[data-tope-go]", v).forEach((b) => (b.onclick = async () => {
+    const on = b.getAttribute("aria-pressed") !== "true"; // tocar la opción elegida la deshace
+    if (on && b.dataset.switch) await api("POST", `/slots/${b.dataset.topeGo}/rest`, { since: today(), absent: false });
+    await api("POST", `/slots/${b.dataset.topeSkip}/rest`, { since: today(), absent: on });
+    render();
+  }));
+  $$("[data-tope-turno]", v).forEach((b) => (b.onclick = () => { store.set(b.dataset.topeTurno, "turno"); render(); }));
   calendar($("#cal", v), "home", s.calendar, { start: s.semester.start_date, end: s.semester.end_date }, (d) => openDay(s, d), tests);
 }
 
@@ -299,6 +339,8 @@ async function horario(v) {
   const byDay = DAYS.map((_, w) => full.courses
     .flatMap((c) => c.slots.filter((x) => x.weekday === w).map((x) => ({ ...x, course: c })))
     .sort((a, b) => a.start_time.localeCompare(b.start_time)));
+  const topes = clashes(full.courses);
+  const choca = (x) => topes.flatMap(([a, b]) => (a.id === x.id ? [b] : b.id === x.id ? [a] : []));
   v.innerHTML = `
     <h1 class="h1">Horario</h1>
     <p class="muted">Toca + para agregar una clase, o una clase para editarla. Teoría y laboratorio van como ramos separados.</p>
@@ -318,6 +360,7 @@ async function horario(v) {
             <div class="text-xs text-slate-500">${x.start_time}–${x.end_time}</div>
             <div class="font-medium leading-tight">${esc(x.course.name)}</div>
             <div class="text-xs text-slate-500">${x.course.kind === "L" ? "Laboratorio" : "Teoría"} · mín. ${x.course.min_pct}%</div>
+            ${choca(x).map((o) => `<div class="mt-1 text-xs font-medium text-red-600">⚠️ Choca con ${esc(o.c.name)}</div>`).join("")}
           </button></li>`).join("") || `<li class="text-sm text-slate-400">Sin clases</li>`}
         </ul>
       </section>`).join("")}
@@ -327,6 +370,8 @@ async function horario(v) {
     if (!file) return;
     const r = await api("POST", `/semesters/${full.id}/import-uls`, file);
     toast(r.created ? `${r.created} ramo${r.created > 1 ? "s" : ""} cargado${r.created > 1 ? "s" : ""}. Revisa el % mínimo de cada uno.` : "Esos ramos ya estaban cargados");
+    const n = clashes((await api("GET", `/semesters/${full.id}`)).courses).length;
+    if (n) toast(`Tienes ${n === 1 ? "un tope" : `${n} topes`} de horario: en Inicio eliges a cuál vas.`);
     render();
   };
   $$("[data-add]", v).forEach((b) => (b.onclick = () => slotDialog(full, Number(b.dataset.add))));

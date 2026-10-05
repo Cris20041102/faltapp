@@ -485,6 +485,30 @@ def remove_absences(body: AbsenceIn, user: User = Depends(current_user), db: Ses
     return Response(status_code=204)
 
 
+class RestIn(BaseModel):
+    since: date
+    absent: bool = True
+
+
+@router.post("/slots/{id}/rest", status_code=204)
+def mark_rest(id: int, body: RestIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Tope de horario: desde `since`, todas las clases de este bloque quedan (o dejan de quedar) como falta."""
+    x = db.get(Slot, id)
+    if not x:
+        raise HTTPException(404, "No encontrado")
+    s = db.get(Semester, get_owned(db, Course, x.course_id, user).semester_id)
+    antes = quedan_por_ramo(db, user)
+    if body.absent:
+        have = set(db.scalars(select(Absence.date).where(Absence.slot_id == x.id)))
+        p = calc.Plan(s.start_date, s.end_date, {d.date for d in s.no_class_days}, [], [])
+        db.add_all(Absence(slot_id=x.id, date=d) for d in calc.class_dates(p, x.weekday) if d >= body.since and d not in have)
+    else:
+        db.execute(delete(Absence).where(Absence.slot_id == x.id, Absence.date >= body.since))
+    db.commit()
+    alertar_faltas(db, user, antes)
+    return Response(status_code=204)
+
+
 class ImportItem(BaseModel):
     course_id: int
     absent: list[date] = Field([], max_length=300)
@@ -844,8 +868,9 @@ def cron_daily(key: str = "", today: date | None = None, db: Session = Depends(g
     for s in db.scalars(select(Semester).where(Semester.active, Semester.user_id.in_(with_push))).all():
         uid, p = s.user_id, load_plan(db, s)
         res = calc.summarize(p, today)
-        hoy = [c.name for c in s.courses if any(x.weekday == today.weekday() for x in c.slots)]
-        if hoy and res["calendar"].get(today.isoformat(), "gris") != "gris" and all(d != today for _, d in p.absences):
+        # ramos de hoy que aún no marca como falta (si ya marcó todo, o era falta planeada por un tope, no pregunta por esos)
+        hoy = [c.name for c in s.courses if any(x.weekday == today.weekday() and (x.id, today) not in p.absences for x in c.slots)]
+        if hoy and res["calendar"].get(today.isoformat(), "gris") != "gris":
             push.notify(db, [uid], "¿Faltaste a alguna clase hoy?", f"Hoy tuviste {', '.join(hoy)}. Si faltaste, márcalo en un toque.",
                         "/#inicio", key=f"diario:{today}")
         for e in s.events:
