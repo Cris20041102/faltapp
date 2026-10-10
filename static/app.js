@@ -468,7 +468,7 @@ function openDay(s, day) {
         <div><h2 class="h2">${longDate(day)}</h2><p class="muted">${COLOR[s.calendar[day]].label}${past || !slots.length ? "" : " · futura: queda como falta planeada"}</p></div>
         <button data-close class="btn h-9 w-9 !p-0" aria-label="Cerrar">&#10005;</button>
       </div>
-      ${events.map((e) => `<div class="mt-3 rounded-xl ${e.kind === "prueba" ? "bg-red-50 text-red-800" : "bg-sky-50 text-sky-800"} px-3 py-2 text-sm"><b>${KINDS[e.kind]}</b> · ${esc(e.title)}${e.time ? ` · ${e.time}` : ""}</div>`).join("")}
+      ${events.map((e) => `<div class="mt-3 rounded-xl ${e.kind === "prueba" ? "bg-red-50 text-red-800" : "bg-sky-50 text-sky-800"} px-3 py-2 text-sm"><b>${KINDS[e.kind]}${e.course_id ? ` · ${esc(s.courses.find((c) => c.id === e.course_id)?.name ?? "")}` : ""}</b> · ${esc(e.title)}${e.time ? ` · ${e.time}` : ""}</div>`).join("")}
       ${slots.length ? `
       <p class="mt-4 text-sm font-medium text-slate-600">Marca las clases a las que ${past ? "faltaste" : "vas a faltar"}:</p>
       <ul class="mt-2 space-y-2">${slots.map((x) => `
