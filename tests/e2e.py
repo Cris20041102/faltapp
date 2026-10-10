@@ -373,6 +373,10 @@ def main():
             expect(nbd).to_contain_text("Teoría 60% · Lab 40%")  # el lab viene en su propia tabla y se junta con la teoría
             expect(nbd).to_contain_text("Necesitas 3,1 en 2° Prueba Parcial, 3° Prueba Parcial y Lab 2")
             expect(nbd).to_contain_text("24/09 1° Prueba Parcial")
+            imp.goto(URL + "/#agenda")  # las fechas de Phoenix quedan solas en la agenda (avisos de "Mañana" incluidos)
+            expect(imp.get_by_role("heading", name="Agenda")).to_be_visible()
+            expect(imp.locator("li", has_text="2° Prueba Parcial")).to_contain_text("Prueba · Bases de Datos · de Phoenix")
+            expect(imp.locator("li", has_text="2° Prueba Parcial").get_by_role("button")).to_have_count(0)
             imp.close()
 
             # servidor dormido (como Render tras 15 min sin uso): la app abre igual con lo guardado y avisa que está despertando

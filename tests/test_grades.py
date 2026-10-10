@@ -49,3 +49,26 @@ def test_notas_desde_phoenix(client):
     assert r.json()["grades"]["items"][3] == {"name": "Hito 1", "weight": 0, "date": "2026-10-01", "kind": "L"}
     body["items"].append({"name": "Lab 2", "weight": 10, "kind": "L"})  # el lab ya sumaba 100%
     assert client.put(url, headers=h, json=body).status_code == 422
+
+
+def test_evaluaciones_van_a_la_agenda(client):
+    """Las evaluaciones con fecha (de Phoenix) aparecen solas en la agenda, se mueven con la fecha y se van con el ramo."""
+    h = register(client)
+    s = new_semester(client, h)
+    c = new_course(client, h, s["id"])
+    url, ev = f"/api/courses/{c['id']}/grades", f"/api/semesters/{s['id']}/events"
+    client.post(ev, headers=h, json={"kind": "entrega", "date": "2026-10-29", "title": "Informe", "course_id": c["id"]})
+    items = [{"name": "Certamen 1", "weight": 50, "date": "2026-10-22"}, {"name": "Certamen 2", "weight": 50, "date": "2026-10-29"},
+             {"name": "Taller", "weight": 0}]
+    assert client.put(url, headers=h, json={"items": items}).status_code == 200
+    auto = [e for e in client.get(ev, headers=h).json() if e["auto"]]
+    assert [(e["title"], e["date"], e["kind"]) for e in auto] == [("Certamen 1", "2026-10-22", "prueba")]  # ese día ya tenía el Informe
+    items[0]["date"] = "2026-10-23"  # Phoenix movió la fecha: misma entrada, no una nueva
+    client.put(url, headers=h, json={"items": items})
+    moved = [e for e in client.get(ev, headers=h).json() if e["auto"]]
+    assert [(e["id"], e["date"]) for e in moved] == [(auto[0]["id"], "2026-10-23")]
+    client.put(url, headers=h, json={"items": items[1:]})
+    assert [e["title"] for e in client.get(ev, headers=h).json()] == ["Informe"]
+    client.put(url, headers=h, json={"items": items})
+    client.delete(f"/api/courses/{c['id']}", headers=h)
+    assert [e["title"] for e in client.get(ev, headers=h).json()] == ["Informe"]  # lo anotado a mano queda

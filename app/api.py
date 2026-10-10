@@ -432,13 +432,31 @@ def put_grades(id: int, body: GradesIn, user: User = Depends(current_user), db: 
     """Evaluaciones del ramo para calcular cuánto necesita; el cálculo se hace en la app."""
     c = get_owned(db, Course, id, user)
     c.grades = body.model_dump(mode="json", exclude_none=True) if body.items else None  # sin campos vacíos
+    sync_agenda(db, c, user, body.items)
     db.commit()
     return course_out(c)
 
 
+def sync_agenda(db: Session, c: Course, user: User, items: list[GradeItem]):
+    """Las evaluaciones con fecha (las trae Phoenix) van solas a la agenda como pruebas, y se mueven o borran con ellas.
+    Se actualizan en su lugar (mismo id) para no repetir el aviso de "Mañana". Si ya anotaste algo de ese ramo ese día, no se duplica."""
+    mine = db.scalars(select(Event).where(Event.course_id == c.id)).all()
+    taken = {e.date for e in mine if not e.auto}
+    want = {i.name: i.date for i in items if i.date and i.date not in taken}
+    for e in mine:
+        if e.auto and e.title not in want:
+            db.delete(e)
+        elif e.auto:
+            e.date = want.pop(e.title)
+    db.add_all(Event(user_id=user.id, semester_id=c.semester_id, course_id=c.id, kind="prueba", date=d, title=t, auto=True)
+               for t, d in want.items())
+
+
 @router.delete("/courses/{id}", status_code=204)
 def delete_course(id: int, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    db.delete(get_owned(db, Course, id, user))
+    c = get_owned(db, Course, id, user)
+    db.execute(delete(Event).where(Event.course_id == c.id, Event.auto))  # sus evaluaciones de Phoenix se van con el ramo
+    db.delete(c)
     db.commit()
     return Response(status_code=204)
 
@@ -826,7 +844,7 @@ def prueba_warnings(db: Session, user: User, d: date) -> list[str]:
 
 def event_out(e: Event) -> dict:
     return {"id": e.id, "course_id": e.course_id, "kind": e.kind, "date": e.date,
-            "time": e.time.strftime("%H:%M") if e.time else None, "title": e.title}
+            "time": e.time.strftime("%H:%M") if e.time else None, "title": e.title, "auto": e.auto}
 
 
 class EventIn(BaseModel):

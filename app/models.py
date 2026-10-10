@@ -1,7 +1,7 @@
 import datetime as dt
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text, Time, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text, Time, UniqueConstraint, false
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -134,6 +134,7 @@ class Event(Base):
     date: Mapped[dt.date] = mapped_column(Date)
     time: Mapped[dt.time | None] = mapped_column(Time, nullable=True)
     title: Mapped[str] = mapped_column(String(120))
+    auto: Mapped[bool] = mapped_column(Boolean, default=False, server_default=false())  # evaluación con fecha que trajo Phoenix (Notas)
 
 
 # ---------- notificaciones push ----------

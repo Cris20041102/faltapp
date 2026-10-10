@@ -947,8 +947,8 @@ async function agenda(v, arg) {
     <li class="flex items-center gap-3 py-3">
       <div class="w-12 shrink-0 text-center"><div class="text-lg font-bold leading-none">${parse(e.date).getDate()}</div><div class="text-[11px] uppercase text-slate-500">${MONTHS[parse(e.date).getMonth()].slice(0, 3)}</div></div>
       <div class="flex-1"><div class="font-medium leading-tight">${esc(e.title)}</div>
-      <div class="text-xs text-slate-500"><span class="${e.kind === "prueba" ? "font-semibold text-red-600" : ""}">${KINDS[e.kind]}</span>${e.course_id ? ` · ${esc(courseName(e.course_id))}` : ""}${e.time ? ` · ${e.time}` : ""}</div></div>
-      <button data-del="${e.id}" class="btn h-8 w-8 !p-0" aria-label="Borrar ${esc(e.title)}">&#10005;</button></li>`;
+      <div class="text-xs text-slate-500"><span class="${e.kind === "prueba" ? "font-semibold text-red-600" : ""}">${KINDS[e.kind]}</span>${e.course_id ? ` · ${esc(courseName(e.course_id))}` : ""}${e.time ? ` · ${e.time}` : ""}${e.auto ? " · de Phoenix" : ""}</div></div>
+      ${e.auto ? "" : `<button data-del="${e.id}" class="btn h-8 w-8 !p-0" aria-label="Borrar ${esc(e.title)}">&#10005;</button>`}</li>`;
   const upcoming = events.filter((e) => e.date >= today()), past = events.filter((e) => e.date < today());
   v.innerHTML = `
     <h1 class="h1">Agenda</h1>
