@@ -318,15 +318,33 @@ def main():
             page.get_by_role("button", name="Guardar recuperación").click()
             expect(bd).to_contain_text("Clase del 23/09 recuperada el sábado 26 de septiembre")
 
-            # notas: ¿cuánto necesito en el examen? (se calcula al escribir y queda en la tarjeta del ramo)
-            bd.get_by_role("button", name="¿Cuánto necesito en el examen?").click()
+            # Notas: apartado propio (se calcula al escribir) e importación desde Phoenix con el mismo marcador
+            page.goto(URL + "/#notas")
+            nbd = page.locator("[data-asignatura]").filter(has_text="Bases de Datos")
+            nbd.get_by_role("button", name="Anotar evaluaciones").click()
             dlg = page.locator("#dlg")
             expect(dlg.locator("[data-row]")).to_have_count(3)  # Certamen 1, Certamen 2 y Examen de ejemplo
             dlg.get_by_label("Nota de Certamen 1").fill("5,5")
             dlg.get_by_label("Nota de Certamen 2").fill("3")
             expect(dlg.locator("[data-result]")).to_contain_text("Necesitas 3,7 en Examen")
             dlg.get_by_role("button", name="Guardar", exact=True).click()
-            expect(bd.locator("[data-grades]")).to_have_text("📝 Necesitas 3,7 en Examen")
+            expect(nbd).to_contain_text("Necesitas 3,7 en Examen")
+            page.goto(URL + "/#importar")
+            href = page.locator("[data-bm]").get_attribute("href")
+            page.goto((ROOT / "tests" / "fixtures" / "phoenix_notas_demo.html").as_uri())
+            with page.expect_popup() as pop:
+                page.evaluate(urllib.parse.unquote(href.removeprefix("javascript:")))
+            imp = pop.value
+            imp.on("pageerror", lambda e: errors.append(str(e)))
+            expect(imp.get_by_label("Bases de Datos I", exact=True).locator("option:checked")).to_have_text("Bases de Datos")
+            expect(imp.get_by_label("Ciberseguridad Avanzada", exact=True).locator("option:checked")).to_have_text("No importar")
+            imp.get_by_role("button", name="Importar").click()
+            imp.wait_for_url("**/#notas")
+            nbd = imp.locator("[data-asignatura]").filter(has_text="Bases de Datos")
+            expect(nbd).to_contain_text("Teoría 60% · Lab 40%")  # el lab viene en su propia tabla y se junta con la teoría
+            expect(nbd).to_contain_text("Necesitas 3,1 en 2° Prueba Parcial, 3° Prueba Parcial y Lab 2")
+            expect(nbd).to_contain_text("24/09 1° Prueba Parcial")
+            imp.close()
 
             # servidor dormido (como Render tras 15 min sin uso): la app abre igual con lo guardado y avisa que está despertando
             page.goto(URL + "/#inicio")

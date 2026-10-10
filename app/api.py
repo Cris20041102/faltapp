@@ -404,18 +404,25 @@ def patch_course(id: int, body: CoursePatch, user: User = Depends(current_user),
 
 
 class GradeItem(BaseModel):
-    name: str = Field(min_length=1, max_length=40)
-    weight: float = Field(gt=0, le=100)  # porcentaje
+    name: str = Field(min_length=1, max_length=80)
+    weight: float = Field(ge=0, le=100)  # % dentro de su parte (teoría o lab) si hay reparto; si no, de la nota final. 0 = aún no publicado
     grade: float | None = Field(None, ge=1, le=7)  # escala chilena; None = aún no se rinde
+    date: dt.date | None = None
+    kind: Literal["T", "L"] | None = None  # teoría o laboratorio
 
 
 class GradesIn(BaseModel):
     meta: float = Field(4.0, ge=1, le=7)  # nota que quiere sacar (aprobar = 4,0)
-    items: list[GradeItem] = Field(max_length=20)
+    shares: dict[Literal["T", "L"], float] | None = None  # reparto de Phoenix, ej. {"T": 60, "L": 40}
+    items: list[GradeItem] = Field(max_length=30)
 
     @model_validator(mode="after")
     def _suma(self):
-        if sum(i.weight for i in self.items) > 100.001:
+        parts = {}  # con reparto, cada parte suma hasta 100% por separado
+        for i in self.items:
+            k = i.kind if self.shares and i.kind else None
+            parts[k] = parts.get(k, 0) + i.weight
+        if any(v > 100.001 for v in parts.values()) or sum((self.shares or {}).values()) > 100.001:
             raise ValueError("Los porcentajes suman más de 100%")
         return self
 
@@ -424,7 +431,7 @@ class GradesIn(BaseModel):
 def put_grades(id: int, body: GradesIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Evaluaciones del ramo para calcular cuánto necesita; el cálculo se hace en la app."""
     c = get_owned(db, Course, id, user)
-    c.grades = body.model_dump() if body.items else None
+    c.grades = body.model_dump(mode="json", exclude_none=True) if body.items else None  # sin campos vacíos
     db.commit()
     return course_out(c)
 

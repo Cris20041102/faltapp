@@ -202,13 +202,16 @@ const slotsOn = (courses, d) => courses.flatMap((c) => c.slots
 // ---------- notas: ¿cuánto necesito? (escala chilena 1,0–7,0) ----------
 const nota = (n) => (Math.round(n * 10 + 1e-9) / 10).toFixed(1).replace(".", ","); // 4,35 → 4,4 (no 4,3 por el redondeo binario)
 const num = (v) => { const t = String(v ?? "").trim().replace(",", "."); return t === "" || isNaN(t) ? null : Number(t); };
+const pct = (w) => String(Math.round(w * 10) / 10).replace(".", ",");
 const junto = (xs) => (xs.length > 2 ? `${xs.slice(0, -1).join(", ")} y ${xs.at(-1)}` : xs.join(" y "));
 function gradeCalc(g) { // → nota final si ya rindió todo, o la nota que necesita en lo que queda para llegar a la meta
-  const items = (g?.items || []).filter((i) => i.weight > 0), meta = g?.meta ?? 4;
-  const total = items.reduce((a, i) => a + i.weight, 0);
+  // con reparto (teoría 60% / lab 40%) el % de cada evaluación es dentro de su parte: se lleva a % de la nota final
+  const sh = g?.shares, eff = (i) => (sh && i.kind ? ((sh[i.kind] ?? 0) * i.weight) / 100 : i.weight);
+  const items = (g?.items || []).map((i) => ({ ...i, w: eff(i) })).filter((i) => i.w > 0), meta = g?.meta ?? 4;
+  const total = items.reduce((a, i) => a + i.w, 0);
   if (!total) return null;
   const done = items.filter((i) => i.grade != null), rest = items.filter((i) => i.grade == null);
-  const sum = done.reduce((a, i) => a + i.weight * i.grade, 0), wRest = rest.reduce((a, i) => a + i.weight, 0);
+  const sum = done.reduce((a, i) => a + i.w * i.grade, 0), wRest = rest.reduce((a, i) => a + i.w, 0);
   const prom = done.length ? sum / (total - wRest) : null;
   if (!wRest) return { meta, total, prom, final: Math.round((sum / total) * 10 + 1e-9) / 10 }; // 3,95 → 4,0
   // sin contar el redondeo a favor (3,95 → 4,0): mejor que sobre a que falte
@@ -218,25 +221,31 @@ const gradeText = (r) => !r ? ""
   : r.final != null ? `${r.final >= r.meta ? "✅" : "❌"} Nota final ${nota(r.final)}`
   : r.need <= 1 ? `🎉 Ya tienes el ${nota(r.meta)} asegurado`
   : r.need > 7 ? `😬 No alcanza: con 7,0 en todo llegarías a ${nota(r.max)}`
-  : `Necesitas ${nota(r.need)} en ${junto(r.rest)}`;
+  : `Necesitas ${nota(r.need)} en ${r.rest.length > 3 ? `lo que queda (${r.rest.length} evaluaciones)` : junto(r.rest)}`;
 
 function openGrades(c) {
   const g = c.grades || { meta: 4, items: [{ name: "Certamen 1", weight: 30 }, { name: "Certamen 2", weight: 30 }, { name: "Examen", weight: 40 }] };
   const row = (i = {}) => `
-    <div data-row class="grid grid-cols-[1fr_4rem_4rem_2rem] items-center gap-2">
-      <input class="input !mt-0" name="name" maxlength="40" placeholder="Evaluación" value="${esc(i.name ?? "")}" aria-label="Evaluación">
-      <input class="input !mt-0 text-center" name="weight" inputmode="decimal" placeholder="%" value="${i.weight ?? ""}" aria-label="Porcentaje de ${esc(i.name ?? "la evaluación")}">
-      <input class="input !mt-0 text-center" name="grade" inputmode="decimal" placeholder="—" value="${i.grade != null ? nota(i.grade) : ""}" aria-label="Nota de ${esc(i.name ?? "la evaluación")}">
+    <div data-row data-date="${i.date ?? ""}" data-kind="${i.kind ?? ""}" class="grid grid-cols-[1fr_3.25rem_3.25rem_1.75rem] items-center gap-2">
+      <input class="input !mt-0" name="name" maxlength="80" placeholder="Evaluación" value="${esc(i.name ?? "")}" aria-label="Evaluación">
+      <input class="input !mt-0 !px-1 text-center" name="weight" inputmode="decimal" placeholder="%" value="${i.weight != null ? pct(i.weight) : ""}" aria-label="Porcentaje de ${esc(i.name ?? "la evaluación")}">
+      <input class="input !mt-0 !px-1 text-center" name="grade" inputmode="decimal" placeholder="—" value="${i.grade != null ? nota(i.grade) : ""}" aria-label="Nota de ${esc(i.name ?? "la evaluación")}">
       <button type="button" data-del-row class="h-8 w-8 rounded-full" aria-label="Quitar evaluación">&#10005;</button>
     </div>`;
+  const sh = g.shares, parte = { T: "Teoría", L: "Laboratorio" };
+  const rows = sh ? ["T", "L", ""].map((k) => {
+    const its = g.items.filter((i) => (i.kind || "") === k && (k || true));
+    return its.length ? `${k ? `<p class="mt-3 text-xs font-semibold text-slate-500">${parte[k]} · vale ${pct(sh[k] ?? 0)}%</p>` : ""}${its.map(row).join("")}` : "";
+  }).join("") : g.items.map(row).join("");
   openDialog(`
     <form data-grades-form class="p-5">
       <div class="flex items-start justify-between gap-2">
         <div><h2 class="h2">📝 Notas · ${esc(c.name)}</h2><p class="muted">Pon el % de cada evaluación y las notas que ya tienes. Deja vacía la nota de lo que falta.</p></div>
         <button type="button" data-close class="btn h-9 w-9 shrink-0 !p-0" aria-label="Cerrar">&#10005;</button>
       </div>
-      <div class="mt-4 grid grid-cols-[1fr_4rem_4rem_2rem] gap-2 px-1 text-xs font-medium text-slate-500"><span>Evaluación</span><span class="text-center">%</span><span class="text-center">Nota</span><span></span></div>
-      <div data-rows class="mt-1 space-y-2">${g.items.map(row).join("")}</div>
+      <div class="mt-4 grid grid-cols-[1fr_3.25rem_3.25rem_1.75rem] gap-2 px-1 text-xs font-medium text-slate-500"><span>Evaluación</span><span class="text-center">%</span><span class="text-center">Nota</span><span></span></div>
+      <div data-rows class="mt-1 space-y-2">${rows}</div>
+      ${sh ? `<p class="mt-2 text-xs text-slate-500">El % de cada evaluación es dentro de su parte (como en Phoenix). Las que agregues a mano cuentan como % de la nota final.</p>` : ""}
       <button type="button" data-add-row class="mt-2 text-sm font-medium text-indigo-600">+ Agregar evaluación</button>
       <label class="field mt-3">Nota que quieres sacar<input name="meta" class="input" inputmode="decimal" value="${nota(g.meta)}"></label>
       <div data-result class="mt-4 rounded-xl bg-indigo-50 p-3 text-sm text-indigo-900" aria-live="polite"></div>
@@ -245,16 +254,20 @@ function openGrades(c) {
     const f = $("[data-grades-form]", d);
     const read = () => ({
       meta: num(f.meta.value) ?? 4,
-      items: $$("[data-row]", f).map((r, n) => ({ name: r.querySelector("[name=name]").value.trim() || `Evaluación ${n + 1}`, weight: num(r.querySelector("[name=weight]").value), grade: num(r.querySelector("[name=grade]").value) }))
-        .filter((i) => i.weight != null || i.grade != null),
+      shares: sh,
+      items: $$("[data-row]", f).map((r, n) => ({ name: r.querySelector("[name=name]").value.trim() || `Evaluación ${n + 1}`, weight: num(r.querySelector("[name=weight]").value), grade: num(r.querySelector("[name=grade]").value),
+        date: r.dataset.date || undefined, kind: r.dataset.kind || undefined }))
+        .filter((i) => i.weight != null || i.grade != null).map((i) => ({ ...i, weight: i.weight ?? 0 })),
     });
     const show = () => {
-      const x = read(), r = gradeCalc(x), total = x.items.reduce((a, i) => a + (i.weight || 0), 0);
+      const x = read(), r = gradeCalc(x), parts = {};
+      x.items.forEach((i) => { const k = sh && i.kind ? i.kind : ""; parts[k] = (parts[k] || 0) + i.weight; });
+      const over = Object.entries(parts).find(([, w]) => w > 100.05);
       const bad = x.items.some((i) => i.grade != null && (i.grade < 1 || i.grade > 7)) || x.meta < 1 || x.meta > 7;
       $("[data-result]", f).innerHTML = bad ? "Las notas van de 1,0 a 7,0."
-        : total > 100 ? `Los porcentajes suman ${total}%: no pueden pasar de 100%.`
-        : !r ? "Pon el porcentaje de cada evaluación."
-        : `<p class="font-semibold">${gradeText(r)}</p>${r.prom != null && r.final == null ? `<p class="mt-1">Llevas un ${nota(r.prom)} en lo rendido.</p>` : ""}${total !== 100 ? `<p class="mt-1 opacity-80">Los porcentajes suman ${total}% (calculado sobre ese total).</p>` : ""}`;
+        : over ? `Los porcentajes ${over[0] ? `de ${parte[over[0]].toLowerCase()} ` : ""}suman ${pct(over[1])}%: no pueden pasar de 100%.`
+        : !r ? (x.items.length ? "Faltan los porcentajes de las evaluaciones (Phoenix aún no los publica): ponlos a mano si los sabes." : "Pon el porcentaje de cada evaluación.")
+        : `<p class="font-semibold">${gradeText(r)}</p>${r.prom != null && r.final == null ? `<p class="mt-1">Llevas un ${nota(r.prom)} en lo rendido.</p>` : ""}${Math.abs(r.total - 100) > 0.5 ? `<p class="mt-1 opacity-80">Con los % que hay suma ${pct(r.total)}% de la nota final (calculado sobre eso).</p>` : ""}`;
     };
     const bindRows = () => $$("[data-del-row]", f).forEach((b) => (b.onclick = () => { b.closest("[data-row]").remove(); show(); }));
     $("[data-add-row]", f).onclick = () => { $("[data-rows]", f).insertAdjacentHTML("beforeend", row()); bindRows(); };
@@ -270,6 +283,88 @@ function openGrades(c) {
   });
 }
 
+// Teoría y laboratorio del mismo ramo van juntos: las notas se guardan en uno (el de teoría si hay)
+const asignaturas = (courses) => Object.values(courses.reduce((m, c) => ((m[c.name] ||= []).push(c), m), {}))
+  .map((cs) => ({ name: cs[0].name, courses: cs, anchor: cs.find((c) => c.grades) || cs.find((c) => c.kind === "T") || cs[0] }));
+
+async function notas(v) {
+  const sem = await activeSemester();
+  if (!sem) { location.hash = "#semestre"; return; }
+  const gs = asignaturas((await api("GET", `/semesters/${sem.id}`)).courses);
+  const items = (g) => [...(g.anchor.grades?.items || [])].sort((a, b) => (a.date || "9").localeCompare(b.date || "9"));
+  const next = gs.flatMap((g) => items(g).filter((i) => i.date >= today() && i.grade == null).map((i) => ({ ...i, g }))).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
+  v.innerHTML = `
+    <div class="flex items-end justify-between">
+      <div><h1 class="h1">Notas</h1><p class="muted">Cuánto necesitas en cada ramo para aprobar.</p></div>
+      <a href="#importar" class="text-sm font-medium text-indigo-600">Importar de Phoenix</a>
+    </div>
+    ${next.length ? `
+      <section class="card mt-4"><h2 class="h2">Próximas evaluaciones</h2>
+        <ul class="mt-2 space-y-1 text-sm">${next.map((i) => `<li class="flex gap-3"><span class="w-28 shrink-0 font-medium">${longDate(i.date).split(" ")[0]} ${shortDate(i.date)}</span><span>${esc(i.name)} <span class="text-slate-500">· ${esc(i.g.name)}</span></span></li>`).join("")}</ul>
+      </section>` : ""}
+    <section class="mt-4 grid gap-3 sm:grid-cols-2">${gs.map((g) => {
+      const r = gradeCalc(g.anchor.grades), list = items(g);
+      const tone = !r ? "text-slate-500" : (r.final ?? 7) < r.meta || r.need > 7 ? "text-red-600" : r.need > 5.5 ? "text-yellow-600" : "text-green-600";
+      return `
+      <article data-asignatura="${esc(g.name)}" class="card">
+        <div class="flex items-start justify-between gap-2"><h3 class="font-semibold leading-tight">${esc(g.name)}</h3>
+          <span class="shrink-0 text-xs text-slate-500">${g.courses.map((c) => (c.kind === "L" ? "Lab" : "Teoría")).join(" + ")}</span></div>
+        ${g.anchor.grades?.shares ? `<p class="text-xs text-slate-500">Teoría ${pct(g.anchor.grades.shares.T ?? 0)}% · Lab ${pct(g.anchor.grades.shares.L ?? 0)}%</p>` : ""}
+        <p class="mt-2 font-semibold ${tone}">${gradeText(r) || (list.length ? "Faltan los % de las evaluaciones" : "Aún sin evaluaciones")}</p>
+        ${r?.prom != null && r.final == null ? `<p class="text-xs text-slate-500">Llevas un ${nota(r.prom)} en lo rendido</p>` : ""}
+        ${list.length ? `<ul class="mt-3 space-y-1 text-sm">${list.map((i) => `
+          <li class="flex items-baseline gap-2"><span class="flex-1">${i.date ? `<span class="text-slate-500">${shortDate(i.date)}</span> ` : ""}${esc(i.name)}${i.kind && g.anchor.grades?.shares ? ` <span class="text-xs text-slate-500">${i.kind === "L" ? "Lab" : "Teo"}</span>` : ""}</span>
+            <span class="text-xs text-slate-500">${pct(i.weight)}%</span><span class="w-8 text-right font-semibold">${i.grade != null ? nota(i.grade) : "—"}</span></li>`).join("")}</ul>` : ""}
+        <button data-edit-grades="${g.anchor.id}" class="btn mt-3">${list.length ? "Editar" : "Anotar evaluaciones"}</button>
+      </article>`;
+    }).join("")}</section>`;
+  $$("[data-edit-grades]", v).forEach((b) => (b.onclick = () => openGrades(gs.map((g) => g.anchor).find((c) => c.id === Number(b.dataset.editGrades)))));
+}
+
+// Phoenix → evaluaciones de la asignatura (teoría y lab juntos) y su reparto ("Promedio Teoría 60%" / "Laboratorio 40%")
+function phoenixItems(rows) {
+  const t = rows.find((r) => r.section[1] === "T"), shares = t && Object.keys(t.shares).length ? t.shares : undefined;
+  const items = rows.flatMap((r) => r.evals.map((e) => ({ ...e, kind: r.section[1] })));
+  if (shares?.L && !rows.some((r) => r.section[1] === "L")) items.push({ name: "Laboratorio", weight: 100, kind: "L" }); // notas de lab aún no publicadas
+  return { shares, items };
+}
+
+async function importarNotas(v, rows) {
+  const sem = await activeSemester();
+  if (!sem) { location.hash = "#semestre"; return; }
+  const gs = asignaturas((await api("GET", `/semesters/${sem.id}`)).courses);
+  const ph = Object.values(rows.reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
+  const best = (name) => gs.map((g) => [similar(g.name, name), g]).sort((a, b) => b[0] - a[0]).find(([n]) => n > 0.5)?.[1];
+  v.innerHTML = `
+    <h1 class="h1">Importar notas de Phoenix</h1>
+    <p class="muted">Revisa a qué ramo corresponde cada asignatura. Se traen las evaluaciones con su fecha, porcentaje y nota.</p>
+    <ul class="card mt-4 divide-y divide-fg/10 !py-0">${ph.map((rs, i) => {
+      const its = phoenixItems(rs).items, con = its.filter((x) => x.grade != null);
+      return `
+      <li class="py-3">
+        <div class="font-medium leading-tight">${esc(rs[0].name)}</div>
+        <div class="text-xs text-slate-500">${its.length} evaluacion${its.length === 1 ? "" : "es"} · ${con.length ? `notas: ${con.map((x) => nota(x.grade)).join(", ")}` : "sin notas aún"}</div>
+        <select class="input" data-row="${i}" aria-label="${esc(rs[0].name)}"><option value="">No importar</option>${gs.map((g) => `
+          <option value="${g.anchor.id}" ${best(rs[0].name)?.anchor.id === g.anchor.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select>
+      </li>`;
+    }).join("")}</ul>
+    <button data-import class="btn-primary mt-4 w-full">Importar</button>`;
+  $("[data-import]", v).onclick = async () => {
+    const picks = $$("select[data-row]", v).filter((s) => s.value);
+    if (!picks.length) { toast("Elige al menos un ramo", true); return; }
+    for (const s of picks) {
+      const c = gs.map((g) => g.anchor).find((x) => x.id === Number(s.value));
+      const old = new Map((c.grades?.items || []).map((i) => [`${i.kind}|${i.name}`, i]));
+      // manda Phoenix; si Phoenix aún dice 0%, se respeta el % que anotaste a mano
+      const { shares, items } = phoenixItems(ph[s.dataset.row]);
+      await api("PUT", `/courses/${c.id}/grades`, { meta: c.grades?.meta ?? 4, shares,
+        items: items.map((i) => (i.weight ? i : { ...i, weight: old.get(`${i.kind}|${i.name}`)?.weight ?? 0 })) });
+    }
+    toast(`Notas importadas: ${picks.length} ramo${picks.length === 1 ? "" : "s"}`);
+    location.hash = "#notas";
+  };
+}
+
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
@@ -283,7 +378,6 @@ function courseCard(c) {
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
       ${c.makeups.map((m) => `<p class="mt-2 flex items-center gap-2 text-xs text-slate-500"><span class="flex-1">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</span><button data-unmakeup="${m.id}" class="h-7 w-7 shrink-0 rounded-full" aria-label="Quitar recuperación del ${shortDate(m.date)}">&#10005;</button></p>`).join("")}
-      <button data-grades="${c.id}" class="mt-2 block text-left text-sm font-medium text-indigo-600">📝 ${gradeText(gradeCalc(c.grades)) || "¿Cuánto necesito en el examen?"}</button>
       ${c.ir_seguido ? `<p class="mt-2 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">💪 Ve a ${c.ir_seguido.clases === 1 ? "la próxima clase" : `las próximas ${c.ir_seguido.clases} clases`} (hasta el ${shortDate(c.ir_seguido.hasta)}) y después puedes faltar a ${c.ir_seguido.luego === 1 ? "la que queda" : `las ${c.ir_seguido.luego} que quedan`}</p>` : ""}
     </article>`;
 }
@@ -396,7 +490,6 @@ async function inicio(v) {
   }));
   $$("[data-tope-turno]", v).forEach((b) => (b.onclick = () => { store.set(b.dataset.topeTurno, "turno"); render(); }));
   $$("[data-unmakeup]", v).forEach((b) => (b.onclick = async () => { await api("DELETE", `/makeups/${b.dataset.unmakeup}`); render(); }));
-  $$("[data-grades]", v).forEach((b) => (b.onclick = () => openGrades(s.courses.find((c) => c.id === Number(b.dataset.grades)))));
   calendar($("#cal", v), "home", s.calendar, { start: s.semester.start_date, end: s.semester.end_date }, (d) => openDay(s, d), tests);
 }
 
@@ -921,13 +1014,31 @@ async function agenda(v, arg) {
 // ---------- importar desde Phoenix (ULS) ----------
 const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php";
 
-// Corre DENTRO de Phoenix como marcador: lee las tablas (fecha + ✔/✖ por ramo y sección) y abre Faltapp
-// con los datos en el # (no viajan al servidor hasta confirmar). Sin comentarios // adentro: va en una URL.
+// Corre DENTRO de Phoenix como marcador y abre Faltapp con los datos en el # (no viajan al servidor hasta confirmar).
+// Registro de Asistencia: fecha + ✔/✖ por ramo y sección. Notas Parciales: por sección, cada evaluación
+// ("22-09-2026 1° Prueba Parcial<br>33.3%") con su nota (0.0 = sin nota) y el peso de teoría/lab ("Promedio Teoría<br>60%").
+// Sin comentarios // adentro: va en una URL.
 function phoenixGrab(origin) {
-  const rows = [];
-  let name = "", dates = [];
+  const rows = [], notas = /nota/i.test(location.pathname);
+  let name = "", dates = [], head = [];
   for (const tr of document.querySelectorAll("tr")) {
     const tds = [...tr.children], first = tds[0]?.textContent.trim() || "";
+    if (notas) {
+      if (tds.length === 1 && tds[0].colSpan > 1 && !tds[0].querySelector("table")) name = first;
+      else if (first === "Cordinación") head = tds.map((td) => td.innerText.trim());
+      else if (/^\[[TL]-\d+\]$/.test(first)) {
+        const evals = [], shares = {};
+        head.forEach((h, i) => {
+          const e = h.match(/^(\d\d)-(\d\d)-(\d{4})\s+([^\n]*?)\s*(?:\n\s*([\d.,]+)\s*%)?\s*$/);
+          const s = h.match(/^Promedio (Teor|Lab)\D*?([\d.,]+)\s*%$/);
+          const g = parseFloat((tds[i]?.textContent || "").replace(",", "."));
+          if (e) evals.push({ date: `${e[3]}-${e[2]}-${e[1]}`, name: e[4], weight: parseFloat((e[5] || "0").replace(",", ".")), grade: g >= 1 ? g : null });
+          if (s) shares[s[1][0]] = parseFloat(s[2].replace(",", "."));
+        });
+        rows.push({ name, section: first, evals, shares });
+      }
+      continue;
+    }
     if (tr.classList.contains("bg-primary")) name = first;
     else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
     else if (/^\[[TL]-\d+\]$/.test(first)) {
@@ -935,7 +1046,7 @@ function phoenixGrab(origin) {
       rows.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check") });
     }
   }
-  if (!rows.length) return alert("Abre Asignaturas → Registro de Asistencia en Phoenix y vuelve a tocar el marcador.");
+  if (!rows.length) return alert(notas ? "Toca «Mostrar Notas Parciales» en Phoenix y vuelve a tocar el marcador." : "Abre Asignaturas → Registro de Asistencia (o Notas Parciales) en Phoenix y vuelve a tocar el marcador.");
   const url = origin + "/#importar/" + encodeURIComponent(JSON.stringify(rows));
   open(url) || (location.href = url);
 }
@@ -953,8 +1064,8 @@ const step = (n, html) => `<li class="flex gap-3"><span class="grid h-7 w-7 shri
 const steps = (title, list) => `<h3 class="mt-5 font-semibold text-slate-900">${title}</h3><ol class="mt-3 space-y-4">${list.map((h, i) => step(i + 1, h)).join("")}</ol>`;
 const COPY = `<button data-copy class="btn-primary mt-2">Copiar código</button>`;
 const GO_PHOENIX = `<a href="${PHOENIX}" target="_blank" rel="noopener" class="btn mt-2">Abrir Phoenix</a>`;
-const IN_PHOENIX = "Entra a Phoenix con tu cuenta y ve a <b>Asignaturas → Registro de Asistencia</b>.";
-const CONFIRM = "Se abre Faltapp con tus faltas. Revisa que cada ramo esté bien elegido y toca <b>Importar</b>. ¡Listo!";
+const IN_PHOENIX = "Entra a Phoenix con tu cuenta y ve a <b>Asignaturas → Registro de Asistencia</b> (tus faltas) o <b>Asignaturas → Notas Parciales</b> (tus notas).";
+const CONFIRM = "Se abre Faltapp con tus faltas o tus notas. Revisa que cada ramo esté bien elegido y toca <b>Importar</b>. ¡Listo!";
 
 function importHelp(v) {
   const bm = "javascript:" + encodeURIComponent(`(${phoenixGrab})(${JSON.stringify(location.origin)})`);
@@ -991,7 +1102,8 @@ function importHelp(v) {
   const tabs = { pc: "PC", android: "Android", iphone: "iPhone" };
   v.innerHTML = `
     <h1 class="h1">Importar desde Phoenix</h1>
-    <p class="muted">Trae tus faltas del registro oficial de la ULS sin anotarlas una por una. La primera vez guardas un botón en tu navegador (toma 1 minuto) y después basta con tocarlo estando en Phoenix.</p>
+    <p class="muted">Trae tus faltas y tus notas del registro oficial de la ULS sin anotarlas una por una. La primera vez guardas un botón en tu navegador (toma 1 minuto) y después basta con tocarlo estando en Phoenix.</p>
+    <p class="mt-2 rounded-xl bg-indigo-50 px-3 py-2 text-sm text-indigo-900">¿Guardaste el botón antes del 9 de octubre? Bórralo y guárdalo de nuevo: el nuevo también importa tus notas.</p>
     <section class="card mt-4">
       <p class="text-sm font-medium text-slate-600">¿Desde dónde lo vas a usar?</p>
       <div class="mt-2 grid grid-cols-3 gap-2">${Object.entries(tabs).map(([k, n]) => `
@@ -1001,7 +1113,7 @@ function importHelp(v) {
     <details class="card mt-4">
       <summary class="cursor-pointer font-semibold">¿No funciona?</summary>
       <ul class="mt-3 list-disc space-y-2 pl-5 text-sm">
-        <li>Tócalo estando en la página de <b>Registro de Asistencia</b> de Phoenix, con tu sesión iniciada.</li>
+        <li>Tócalo estando en <b>Registro de Asistencia</b> o en <b>Notas Parciales</b> (después de tocar «Mostrar Notas Parciales»), con tu sesión de Phoenix iniciada.</li>
         <li>Si no pasa nada, el código no quedó pegado completo: repite el paso de pegar. Debe empezar con <b>javascript:</b></li>
         <li>En celular usa <b>Chrome</b> (Android) o <b>Safari</b> (iPhone). En otros navegadores puede no funcionar.</li>
         <li>Si Faltapp cambió de dirección, borra el botón y guárdalo de nuevo.</li>
@@ -1023,7 +1135,9 @@ function importHelp(v) {
 
 async function importar(v, arg) {
   let rows = null;
-  try { rows = arg && JSON.parse(decodeURIComponent(arg)).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
+  try { rows = arg && JSON.parse(decodeURIComponent(arg)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
+  if (rows?.length && rows.every((r) => Array.isArray(r.evals))) return importarNotas(v, rows);
+  rows = rows?.filter?.((r) => Array.isArray(r.absent) && Array.isArray(r.present));
   if (!rows?.length) return importHelp(v);
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
@@ -1154,7 +1268,7 @@ const bindTheme = (v) => $$("[data-theme-pick]", v).forEach((b) => (b.onclick = 
 }));
 
 // ---------- router ----------
-const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda };
+const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda, notas };
 let shown = null; // pantalla que se ve ahora: solo se anima al cambiar de pantalla, no al refrescar la misma
 async function render() {
   const [name, arg] = location.hash.slice(1).split("/");
