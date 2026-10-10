@@ -17,6 +17,30 @@ PORT = 8765
 URL = f"http://127.0.0.1:{PORT}"
 
 
+PHX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informacion/"
+
+
+def new_tab(page):
+    with page.expect_popup() as pop:
+        page.evaluate("window.open('about:blank')")
+    return pop.value
+
+
+def run_bookmark(page, href, asistencia, notas):
+    """Simula Phoenix (en latin-1, como el real) y toca el marcador desde otra página de Phoenix: trae las dos solo."""
+    files = {"fx_informacion_asistencia.php": asistencia, "fx_informacion_nota.php": notas}
+
+    def phoenix(route):
+        f = files.get(route.request.url.split("/")[-1])
+        html = (ROOT / "tests" / "fixtures" / f).read_text(encoding="utf-8") if f else "<!doctype html><title>Phoenix</title><p>Inicio"
+        route.fulfill(body=html.encode("cp1252", errors="replace"), headers={"content-type": "text/html; charset=iso8859-1"})
+    page.unroute("https://phoenix.cic.userena.cl/**")
+    page.route("https://phoenix.cic.userena.cl/**", phoenix)
+    page.goto(PHX + "fx_informacion_principal.php")
+    page.evaluate("() => { " + urllib.parse.unquote(href.removeprefix("javascript:")) + "; }")
+    page.wait_for_url(URL + "/**")
+
+
 def wait_notification(pg, title, seconds=5):
     """Espera a que el service worker muestre un aviso con ese título (evaluate sí espera promesas; wait_for_function no)."""
     for _ in range(seconds * 4):
@@ -209,11 +233,10 @@ def main():
             expect(iphone.get_by_role("button", name="iPhone")).to_have_attribute("aria-pressed", "true")
             iphone.close()
             href = page.locator("[data-bm]").get_attribute("href")
-            page.goto((ROOT / "tests" / "fixtures" / "phoenix_demo.html").as_uri())
-            with page.expect_popup() as pop:
-                page.evaluate(urllib.parse.unquote(href.removeprefix("javascript:")))
-            imp = pop.value
+            imp = new_tab(page)  # otra pestaña del mismo navegador, como Phoenix
             imp.on("pageerror", lambda e: errors.append(str(e)))
+            run_bookmark(imp, href, "phoenix_demo.html", None)  # aún sin notas publicadas
+            expect(imp.locator("h2", has_text="Notas")).to_have_count(0)
             expect(imp.get_by_label("Bases de Datos I [L-1]").locator("option:checked")).to_have_text("Bases de Datos (Lab)")
             expect(imp.get_by_label("Bases de Datos I [T-1]").locator("option:checked")).to_have_text("No importar")
             expect(imp.get_by_label("Ciberseguridad Avanzada [L-1]").locator("option:checked")).to_have_text("No importar")
@@ -331,15 +354,21 @@ def main():
             expect(nbd).to_contain_text("Necesitas 3,7 en Examen")
             page.goto(URL + "/#importar")
             href = page.locator("[data-bm]").get_attribute("href")
-            page.goto((ROOT / "tests" / "fixtures" / "phoenix_notas_demo.html").as_uri())
-            with page.expect_popup() as pop:
-                page.evaluate(urllib.parse.unquote(href.removeprefix("javascript:")))
-            imp = pop.value
+            imp = new_tab(page)
             imp.on("pageerror", lambda e: errors.append(str(e)))
+            run_bookmark(imp, href, "phoenix_demo.html", "phoenix_notas_demo.html")
+            # las faltas ya estaban emparejadas (se recuerda lo elegido); las notas son nuevas y se revisan
+            expect(imp.get_by_label("Bases de Datos I [L-1]").locator("option:checked")).to_have_text("Bases de Datos (Lab)")
             expect(imp.get_by_label("Bases de Datos I", exact=True).locator("option:checked")).to_have_text("Bases de Datos")
             expect(imp.get_by_label("Ciberseguridad Avanzada", exact=True).locator("option:checked")).to_have_text("No importar")
             imp.get_by_role("button", name="Importar").click()
-            imp.wait_for_url("**/#notas")
+            imp.wait_for_url("**/#inicio")
+            # con todo emparejado, el marcador importa solo: sin pantalla de revisión
+            run_bookmark(imp, href, "phoenix_demo.html", "phoenix_notas_demo.html")
+            imp.wait_for_url("**/#inicio")
+            expect(imp.get_by_text("Notas: 1 ramo al día").last).to_be_visible()
+            expect(imp.locator("select[data-row]")).to_have_count(0)
+            imp.goto(URL + "/#notas")
             nbd = imp.locator("[data-asignatura]").filter(has_text="Bases de Datos")
             expect(nbd).to_contain_text("Teoría 60% · Lab 40%")  # el lab viene en su propia tabla y se junta con la teoría
             expect(nbd).to_contain_text("Necesitas 3,1 en 2° Prueba Parcial, 3° Prueba Parcial y Lab 2")

@@ -329,42 +329,6 @@ function phoenixItems(rows) {
   return { shares, items };
 }
 
-async function importarNotas(v, rows) {
-  const sem = await activeSemester();
-  if (!sem) { location.hash = "#semestre"; return; }
-  const gs = asignaturas((await api("GET", `/semesters/${sem.id}`)).courses);
-  const ph = Object.values(rows.reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
-  const best = (name) => gs.map((g) => [similar(g.name, name), g]).sort((a, b) => b[0] - a[0]).find(([n]) => n > 0.5)?.[1];
-  v.innerHTML = `
-    <h1 class="h1">Importar notas de Phoenix</h1>
-    <p class="muted">Revisa a qué ramo corresponde cada asignatura. Se traen las evaluaciones con su fecha, porcentaje y nota.</p>
-    <ul class="card mt-4 divide-y divide-fg/10 !py-0">${ph.map((rs, i) => {
-      const its = phoenixItems(rs).items, con = its.filter((x) => x.grade != null);
-      return `
-      <li class="py-3">
-        <div class="font-medium leading-tight">${esc(rs[0].name)}</div>
-        <div class="text-xs text-slate-500">${its.length} evaluacion${its.length === 1 ? "" : "es"} · ${con.length ? `notas: ${con.map((x) => nota(x.grade)).join(", ")}` : "sin notas aún"}</div>
-        <select class="input" data-row="${i}" aria-label="${esc(rs[0].name)}"><option value="">No importar</option>${gs.map((g) => `
-          <option value="${g.anchor.id}" ${best(rs[0].name)?.anchor.id === g.anchor.id ? "selected" : ""}>${esc(g.name)}</option>`).join("")}</select>
-      </li>`;
-    }).join("")}</ul>
-    <button data-import class="btn-primary mt-4 w-full">Importar</button>`;
-  $("[data-import]", v).onclick = async () => {
-    const picks = $$("select[data-row]", v).filter((s) => s.value);
-    if (!picks.length) { toast("Elige al menos un ramo", true); return; }
-    for (const s of picks) {
-      const c = gs.map((g) => g.anchor).find((x) => x.id === Number(s.value));
-      const old = new Map((c.grades?.items || []).map((i) => [`${i.kind}|${i.name}`, i]));
-      // manda Phoenix; si Phoenix aún dice 0%, se respeta el % que anotaste a mano
-      const { shares, items } = phoenixItems(ph[s.dataset.row]);
-      await api("PUT", `/courses/${c.id}/grades`, { meta: c.grades?.meta ?? 4, shares,
-        items: items.map((i) => (i.weight ? i : { ...i, weight: old.get(`${i.kind}|${i.name}`)?.weight ?? 0 })) });
-    }
-    toast(`Notas importadas: ${picks.length} ramo${picks.length === 1 ? "" : "s"}`);
-    location.hash = "#notas";
-  };
-}
-
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
@@ -1014,18 +978,37 @@ async function agenda(v, arg) {
 // ---------- importar desde Phoenix (ULS) ----------
 const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php";
 
-// Corre DENTRO de Phoenix como marcador y abre Faltapp con los datos en el # (no viajan al servidor hasta confirmar).
-// Registro de Asistencia: fecha + ✔/✖ por ramo y sección. Notas Parciales: por sección, cada evaluación
-// ("22-09-2026 1° Prueba Parcial<br>33.3%") con su nota (0.0 = sin nota) y el peso de teoría/lab ("Promedio Teoría<br>60%").
+// Corre DENTRO de Phoenix como marcador: desde cualquier página de Phoenix (con sesión iniciada) trae el Registro de
+// Asistencia y las Notas Parciales y abre Faltapp con los datos en el # (no viajan al servidor hasta importar).
+// Asistencia: fecha + ✔/✖ por ramo y sección. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial<br>33.3%")
+// con su nota (0.0 = sin nota) y el peso de teoría/lab ("Promedio Teoría<br>60%"). Phoenix responde en latin-1.
 // Sin comentarios // adentro: va en una URL.
-function phoenixGrab(origin) {
-  const rows = [], notas = /nota/i.test(location.pathname);
-  let name = "", dates = [], head = [];
-  for (const tr of document.querySelectorAll("tr")) {
-    const tds = [...tr.children], first = tds[0]?.textContent.trim() || "";
-    if (notas) {
+async function phoenixGrab(origin) {
+  const msg = document.createElement("div");
+  msg.textContent = "Trayendo tus faltas y notas…";
+  msg.style.cssText = "position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:999px;background:#713dff;color:#fff;font:600 15px/1.3 system-ui,sans-serif;box-shadow:0 4px 20px #0004";
+  document.body.append(msg);
+  const get = async (page) => {
+    const r = await fetch("/modulos/bitacora/alumnos/informacion/" + page);
+    const doc = new DOMParser().parseFromString(new TextDecoder(/charset=([\w-]+)/i.exec(r.headers.get("content-type"))?.[1] || "utf-8").decode(await r.arrayBuffer()), "text/html");
+    doc.querySelectorAll("br").forEach((b) => b.replaceWith("\n"));
+    return [...doc.querySelectorAll("tr")].map((tr) => [tr, [...tr.children], tr.children[0]?.textContent.trim() || ""]);
+  };
+  const asistencia = [], notas = [];
+  try {
+    let name = "", dates = [], head = [];
+    for (const [tr, tds, first] of await get("fx_informacion_asistencia.php")) {
+      if (tr.classList.contains("bg-primary")) name = first;
+      else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
+      else if (/^\[[TL]-\d+\]$/.test(first)) {
+        const pick = (sel) => dates.filter((d, i) => /^\d{4}-/.test(d) && tds[i]?.querySelector(sel));
+        asistencia.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check") });
+      }
+    }
+    name = "";
+    for (const [, tds, first] of await get("fx_informacion_nota.php")) {
       if (tds.length === 1 && tds[0].colSpan > 1 && !tds[0].querySelector("table")) name = first;
-      else if (first === "Cordinación") head = tds.map((td) => td.innerText.trim());
+      else if (first === "Cordinación") head = tds.map((td) => td.textContent.trim());
       else if (/^\[[TL]-\d+\]$/.test(first)) {
         const evals = [], shares = {};
         head.forEach((h, i) => {
@@ -1035,20 +1018,13 @@ function phoenixGrab(origin) {
           if (e) evals.push({ date: `${e[3]}-${e[2]}-${e[1]}`, name: e[4], weight: parseFloat((e[5] || "0").replace(",", ".")), grade: g >= 1 ? g : null });
           if (s) shares[s[1][0]] = parseFloat(s[2].replace(",", "."));
         });
-        rows.push({ name, section: first, evals, shares });
+        notas.push({ name, section: first, evals, shares });
       }
-      continue;
     }
-    if (tr.classList.contains("bg-primary")) name = first;
-    else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
-    else if (/^\[[TL]-\d+\]$/.test(first)) {
-      const pick = (sel) => dates.filter((d, i) => /^\d{4}-/.test(d) && tds[i]?.querySelector(sel));
-      rows.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check") });
-    }
-  }
-  if (!rows.length) return alert(notas ? "Toca «Mostrar Notas Parciales» en Phoenix y vuelve a tocar el marcador." : "Abre Asignaturas → Registro de Asistencia (o Notas Parciales) en Phoenix y vuelve a tocar el marcador.");
-  const url = origin + "/#importar/" + encodeURIComponent(JSON.stringify(rows));
-  open(url) || (location.href = url);
+  } catch (e) { console.warn(e); }
+  msg.remove();
+  if (!asistencia.length && !notas.length) return alert("No encontré tus faltas ni tus notas. Entra a Phoenix con tu cuenta y vuelve a tocar el marcador.");
+  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ asistencia, notas }));
 }
 
 // "Progr. Avanzada" ≈ "Programación Avanzada": proporción de palabras donde una es el inicio de la otra
@@ -1064,17 +1040,17 @@ const step = (n, html) => `<li class="flex gap-3"><span class="grid h-7 w-7 shri
 const steps = (title, list) => `<h3 class="mt-5 font-semibold text-slate-900">${title}</h3><ol class="mt-3 space-y-4">${list.map((h, i) => step(i + 1, h)).join("")}</ol>`;
 const COPY = `<button data-copy class="btn-primary mt-2">Copiar código</button>`;
 const GO_PHOENIX = `<a href="${PHOENIX}" target="_blank" rel="noopener" class="btn mt-2">Abrir Phoenix</a>`;
-const IN_PHOENIX = "Entra a Phoenix con tu cuenta y ve a <b>Asignaturas → Registro de Asistencia</b> (tus faltas) o <b>Asignaturas → Notas Parciales</b> (tus notas).";
-const CONFIRM = "Se abre Faltapp con tus faltas o tus notas. Revisa que cada ramo esté bien elegido y toca <b>Importar</b>. ¡Listo!";
+const IN_PHOENIX = "Entra a Phoenix con tu cuenta (sirve cualquier página de Phoenix).";
+const CONFIRM = "Se abre Faltapp con tus faltas y tus notas. La primera vez revisa que cada ramo esté bien elegido y toca <b>Importar</b>; las siguientes se importa solo. ¡Listo!";
 
 function importHelp(v) {
-  const bm = "javascript:" + encodeURIComponent(`(${phoenixGrab})(${JSON.stringify(location.origin)})`);
+  const bm = "javascript:" + encodeURIComponent(`void (${phoenixGrab})(${JSON.stringify(location.origin)})`);
   const guides = {
     pc: steps("Primera vez: guarda el botón", [
       "Muestra la barra de marcadores de tu navegador: presiona <b>Ctrl + Shift + B</b> (en Mac: <b>Cmd + Shift + B</b>). Aparece una barra debajo de la dirección.",
       `Mantén apretado este botón con el mouse, arrástralo hasta esa barra y suéltalo ahí:<br><a data-bm href="${esc(bm)}" class="btn-primary mt-2">⤓ Importar a Faltapp</a>
       <p class="mt-3 text-xs text-slate-500">¿No te deja arrastrarlo? Haz clic derecho en la barra → <b>Agregar página</b> (o <b>Agregar marcador</b>). Como nombre escribe <b>Faltapp</b> y en la dirección (URL) pega el código que copias aquí:</p>${COPY}`,
-    ]) + steps("Cada vez que quieras actualizar tus faltas", [
+    ]) + steps("Cada vez que quieras actualizar tus faltas y notas", [
       `${IN_PHOENIX}<br>${GO_PHOENIX}`,
       "Haz clic en <b>Importar a Faltapp</b> en la barra de marcadores.",
       CONFIRM,
@@ -1083,7 +1059,7 @@ function importHelp(v) {
       `Toca este botón para copiar el código:<br>${COPY}`,
       "En Chrome toca los <b>tres puntos ⋮</b> (arriba a la derecha) y luego la <b>estrella ☆</b>. Abajo aparece el aviso “Se agregó a favoritos”: toca <b>Editar</b>.<br><span class=\"text-xs text-slate-500\">Si el aviso se fue: ⋮ → Favoritos → toca ⋮ al lado del favorito → Editar.</span>",
       "En <b>Nombre</b> escribe <b>Faltapp</b>. En <b>URL</b> borra todo, mantén el dedo presionado y toca <b>Pegar</b>. Vuelve atrás con la flecha ←: se guarda solo.",
-    ]) + steps("Cada vez que quieras actualizar tus faltas", [
+    ]) + steps("Cada vez que quieras actualizar tus faltas y notas", [
       `En Chrome, ${IN_PHOENIX.charAt(0).toLowerCase() + IN_PHOENIX.slice(1)}<br>${GO_PHOENIX}`,
       "Toca la barra de direcciones (donde va la página web), escribe <b>Faltapp</b> y toca el favorito con la estrella ☆ que aparece en la lista.<br><span class=\"text-xs text-slate-500\">Ojo: tiene que ser escribiéndolo en la barra. Si lo abres desde la lista de favoritos no funciona.</span>",
       CONFIRM,
@@ -1093,7 +1069,7 @@ function importHelp(v) {
       "Toca el botón <b>Compartir</b> (el cuadrado con una flecha hacia arriba) → <b>Agregar marcador</b> → <b>Guardar</b>.",
       "Toca el ícono de <b>marcadores</b> (el libro abierto) → <b>Editar</b> (abajo a la derecha) → toca el marcador que acabas de guardar.",
       "Cambia el nombre por <b>Faltapp</b>. Toca la dirección de abajo, bórrala completa, mantén el dedo presionado y toca <b>Pegar</b>. Toca <b>OK</b>.",
-    ]) + steps("Cada vez que quieras actualizar tus faltas", [
+    ]) + steps("Cada vez que quieras actualizar tus faltas y notas", [
       `En Safari, ${IN_PHOENIX.charAt(0).toLowerCase() + IN_PHOENIX.slice(1)}<br>${GO_PHOENIX}`,
       "Toca la barra de direcciones (donde va la página web), escribe <b>Faltapp</b> y toca el marcador que aparece en la lista.",
       CONFIRM,
@@ -1103,7 +1079,7 @@ function importHelp(v) {
   v.innerHTML = `
     <h1 class="h1">Importar desde Phoenix</h1>
     <p class="muted">Trae tus faltas y tus notas del registro oficial de la ULS sin anotarlas una por una. La primera vez guardas un botón en tu navegador (toma 1 minuto) y después basta con tocarlo estando en Phoenix.</p>
-    <p class="mt-2 rounded-xl bg-indigo-50 px-3 py-2 text-sm text-indigo-900">¿Guardaste el botón antes del 9 de octubre? Bórralo y guárdalo de nuevo: el nuevo también importa tus notas.</p>
+    <p class="mt-2 rounded-xl bg-indigo-50 px-3 py-2 text-sm text-indigo-900">¿Guardaste el botón antes del 10 de octubre? Bórralo y guárdalo de nuevo: el nuevo trae faltas y notas de una vez, desde cualquier página de Phoenix.</p>
     <section class="card mt-4">
       <p class="text-sm font-medium text-slate-600">¿Desde dónde lo vas a usar?</p>
       <div class="mt-2 grid grid-cols-3 gap-2">${Object.entries(tabs).map(([k, n]) => `
@@ -1113,10 +1089,11 @@ function importHelp(v) {
     <details class="card mt-4">
       <summary class="cursor-pointer font-semibold">¿No funciona?</summary>
       <ul class="mt-3 list-disc space-y-2 pl-5 text-sm">
-        <li>Tócalo estando en <b>Registro de Asistencia</b> o en <b>Notas Parciales</b> (después de tocar «Mostrar Notas Parciales»), con tu sesión de Phoenix iniciada.</li>
+        <li>Tócalo estando en Phoenix con tu sesión iniciada (si se te cerró, vuelve a entrar).</li>
         <li>Si no pasa nada, el código no quedó pegado completo: repite el paso de pegar. Debe empezar con <b>javascript:</b></li>
         <li>En celular usa <b>Chrome</b> (Android) o <b>Safari</b> (iPhone). En otros navegadores puede no funcionar.</li>
         <li>Si Faltapp cambió de dirección, borra el botón y guárdalo de nuevo.</li>
+        <li>¿Se importó a un ramo equivocado? <button data-forget class="font-medium text-indigo-600 underline">Volver a elegir los ramos</button> y vuelve a tocar el marcador.</li>
       </ul>
       <label class="field mt-3">Código del botón (por si el botón Copiar no funciona)<textarea readonly rows="3" class="input font-mono text-xs">${esc(bm)}</textarea></label>
     </details>
@@ -1125,6 +1102,7 @@ function importHelp(v) {
     $$("[data-dev]", v).forEach((x) => x.setAttribute("aria-pressed", x === b));
     $$("[data-guide]", v).forEach((g) => g.classList.toggle("hidden", g.dataset.guide !== b.dataset.dev));
   }));
+  $("[data-forget]", v).onclick = () => { try { localStorage.removeItem(PMAP); } catch { /* sin storage */ } toast("La próxima vez te pregunto a qué ramo va cada uno"); };
   $("[data-bm]", v).onclick = (e) => { e.preventDefault(); toast("Arrástralo a la barra de marcadores: se usa estando en Phoenix"); };
   $$("[data-copy]", v).forEach((b) => (b.onclick = async () => {
     try { await navigator.clipboard.writeText(bm); toast("Código copiado ✓"); } catch {
@@ -1133,35 +1111,78 @@ function importHelp(v) {
   }));
 }
 
+// Emparejamiento Phoenix → ramo que confirmaste: si todo lo que trae Phoenix ya está emparejado, se importa sin preguntar.
+// shortcut: vive en este navegador (en otro se revisa una vez); pasarlo al servidor si molesta.
+const PMAP = "phoenix-map";
+const pmap = () => { try { return JSON.parse(localStorage.getItem(PMAP)) || {}; } catch { return {}; } };
+
 async function importar(v, arg) {
-  let rows = null;
-  try { rows = arg && JSON.parse(decodeURIComponent(arg)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
-  if (rows?.length && rows.every((r) => Array.isArray(r.evals))) return importarNotas(v, rows);
-  rows = rows?.filter?.((r) => Array.isArray(r.absent) && Array.isArray(r.present));
-  if (!rows?.length) return importHelp(v);
+  let d = null;
+  try { d = arg && JSON.parse(decodeURIComponent(arg)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
+  if (Array.isArray(d)) d = d.every((r) => Array.isArray(r.evals)) ? { notas: d } : { asistencia: d }; // marcadores antiguos: una sola página
+  const asis = (d?.asistencia || []).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present));
+  const ph = Object.values((d?.notas || []).filter((r) => Array.isArray(r.evals)).reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
+  if (!asis.length && !ph.length) return importHelp(v);
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
   const { courses } = await api("GET", `/semesters/${sem.id}`);
-  const best = (r) => courses.filter((c) => c.kind === r.section[1]).map((c) => [similar(c.name, r.name), c]).sort((a, b) => b[0] - a[0]).find(([n]) => n > 0.5)?.[1];
+  const gs = asignaturas(courses), map = pmap();
+  const top = (list, name) => list.map((x) => [similar(x[1], name), x]).sort((a, b) => b[0] - a[0]).find(([n]) => n > 0.5)?.[1][0];
+  const rowsA = asis.map((r) => {
+    const opts = courses.map((c) => [String(c.id), `${c.name} (${c.kind === "L" ? "Lab" : "Teoría"})`]);
+    return { r, opts, key: `A|${r.name}|${r.section}`, best: top(courses.filter((c) => c.kind === r.section[1]).map((c) => [String(c.id), c.name]), r.name) };
+  });
+  const rowsN = ph.map((rs) => {
+    const opts = gs.map((g) => [String(g.anchor.id), g.name]);
+    return { rs, opts, key: `N|${rs[0].name}`, best: top(opts, rs[0].name) };
+  });
+  const rows = [...rowsA, ...rowsN], known = (x) => map[x.key] === "" || x.opts.some(([id]) => id === map[x.key]);
+
+  const run = async (pick) => {
+    const items = rowsA.filter(pick).map((x) => ({ course_id: Number(pick(x)), absent: x.r.absent, present: x.r.present }));
+    const marks = rowsN.filter(pick);
+    if (!items.length && !marks.length) { toast("Elige al menos un ramo", true); return; }
+    if (items.length) {
+      const r = await api("POST", "/absences/import", { items });
+      toast(`Faltas: ${r.added} nueva${r.added === 1 ? "" : "s"}${r.removed ? `, ${r.removed} corregida${r.removed === 1 ? "" : "s"}` : ""}`);
+      if (r.makeups.length) toast(`Recuperaciones: ${r.makeups.map((x) => `${x.course} del ${shortDate(x.original)} al ${shortDate(x.date)}`).join(", ")}`);
+      if (r.skipped.length) toast(`No calzan con tu horario: ${r.skipped.map((x) => `${x.course} ${shortDate(x.date)}`).join(", ")}`, true);
+    }
+    for (const x of marks) {
+      const c = courses.find((c) => c.id === Number(pick(x)));
+      const old = new Map((c.grades?.items || []).map((i) => [`${i.kind}|${i.name}`, i]));
+      // manda Phoenix; si Phoenix aún dice 0%, se respeta el % que anotaste a mano
+      const { shares, items: its } = phoenixItems(x.rs);
+      await api("PUT", `/courses/${c.id}/grades`, { meta: c.grades?.meta ?? 4, shares,
+        items: its.map((i) => (i.weight ? i : { ...i, weight: old.get(`${i.kind}|${i.name}`)?.weight ?? 0 })) });
+    }
+    if (marks.length) toast(`Notas: ${marks.length} ramo${marks.length === 1 ? "" : "s"} al día`);
+    location.hash = items.length ? "#inicio" : "#notas";
+  };
+  if (rows.every(known) && rows.some((x) => map[x.key])) return run((x) => map[x.key]);
+
+  const li = (x, i, title, sub) => `
+      <li class="py-3">
+        <div class="font-medium leading-tight">${title}</div>
+        <div class="text-xs ${sub[1] ? "text-red-600" : "text-slate-500"}">${sub[0]}</div>
+        <select class="input" data-row="${i}" aria-label="${esc(x.r ? `${x.r.name} ${x.r.section}` : x.rs[0].name)}"><option value="">No importar</option>${x.opts.map(([id, n]) => `
+          <option value="${id}" ${(known(x) ? map[x.key] : x.best) === id ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+      </li>`;
+  const list = (title, html) => html && `${rowsA.length && rowsN.length ? `<h2 class="h2 mt-5">${title}</h2>` : ""}<ul class="card mt-2 divide-y divide-fg/10 !py-0">${html}</ul>`;
   v.innerHTML = `
     <h1 class="h1">Importar desde Phoenix</h1>
-    <p class="muted">Revisa a qué ramo corresponde cada uno. En los días que Phoenix ya registró, manda Phoenix.</p>
-    <ul class="card mt-4 divide-y divide-slate-100 !py-0">${rows.map((r, i) => `
-      <li class="py-3">
-        <div class="font-medium leading-tight">${esc(r.name)} <span class="text-xs text-slate-500">${esc(r.section)}</span></div>
-        <div class="text-xs ${r.absent.length ? "text-red-600" : "text-slate-500"}">${r.absent.length ? `Faltas: ${esc(r.absent.map(shortDate).join(", "))}` : "Sin faltas"} · ${r.present.length} asistencia${r.present.length === 1 ? "" : "s"}</div>
-        <select class="input" data-row="${i}" aria-label="${esc(r.name)} ${esc(r.section)}"><option value="">No importar</option>${courses.map((c) => `
-          <option value="${c.id}" ${best(r)?.id === c.id ? "selected" : ""}>${esc(c.name)} (${c.kind === "L" ? "Lab" : "Teoría"})</option>`).join("")}</select>
-      </li>`).join("")}</ul>
+    <p class="muted">Revisa a qué ramo corresponde cada uno. La próxima vez se importa directo, sin preguntar.</p>
+    ${list("Faltas", rowsA.map((x, i) => li(x, i, `${esc(x.r.name)} <span class="text-xs text-slate-500">${esc(x.r.section)}</span>`,
+      [x.r.absent.length ? `Faltas: ${esc(x.r.absent.map(shortDate).join(", "))} · ${x.r.present.length} asistencia${x.r.present.length === 1 ? "" : "s"}` : `Sin faltas · ${x.r.present.length} asistencia${x.r.present.length === 1 ? "" : "s"}`, x.r.absent.length])).join(""))}
+    ${list("Notas", rowsN.map((x, i) => {
+      const its = phoenixItems(x.rs).items, con = its.filter((e) => e.grade != null);
+      return li(x, rowsA.length + i, esc(x.rs[0].name), [`${its.length} evaluacion${its.length === 1 ? "" : "es"} · ${con.length ? `notas: ${con.map((e) => nota(e.grade)).join(", ")}` : "sin notas aún"}`]);
+    }).join(""))}
     <button data-import class="btn-primary mt-4 w-full">Importar</button>`;
   $("[data-import]", v).onclick = async () => {
-    const items = $$("select[data-row]", v).filter((s) => s.value).map((s) => ({ course_id: Number(s.value), absent: rows[s.dataset.row].absent, present: rows[s.dataset.row].present }));
-    if (!items.length) { toast("Elige al menos un ramo", true); return; }
-    const r = await api("POST", "/absences/import", { items });
-    toast(`Listo: ${r.added} falta${r.added === 1 ? "" : "s"} nueva${r.added === 1 ? "" : "s"}${r.removed ? `, ${r.removed} corregida${r.removed === 1 ? "" : "s"}` : ""}`);
-    if (r.makeups.length) toast(`Recuperaciones: ${r.makeups.map((x) => `${x.course} del ${shortDate(x.original)} al ${shortDate(x.date)}`).join(", ")}`);
-    if (r.skipped.length) toast(`No calzan con tu horario: ${r.skipped.map((x) => `${x.course} ${shortDate(x.date)}`).join(", ")}`, true);
-    location.hash = "#inicio";
+    const pick = Object.fromEntries($$("select[data-row]", v).map((s) => [rows[s.dataset.row].key, s.value]));
+    try { localStorage.setItem(PMAP, JSON.stringify({ ...map, ...pick })); } catch { /* sin storage: se vuelve a preguntar */ }
+    await run((x) => pick[x.key]);
   };
 }
 
