@@ -229,7 +229,7 @@ def slot_out(s: Slot) -> dict:
 
 def course_out(c: Course) -> dict:
     return {"id": c.id, "name": c.name, "kind": c.kind, "min_pct": c.min_pct, "slots": [slot_out(s) for s in c.slots],
-            "makeups": [{"id": m.id, "original": m.original, "date": m.date} for m in c.makeups]}
+            "makeups": [{"id": m.id, "original": m.original, "date": m.date} for m in c.makeups], "grades": c.grades}
 
 
 def semester_out(s: Semester, full: bool = False) -> dict:
@@ -399,6 +399,32 @@ def patch_course(id: int, body: CoursePatch, user: User = Depends(current_user),
         c.slots = new
     for k, v in data.items():
         setattr(c, k, v)
+    db.commit()
+    return course_out(c)
+
+
+class GradeItem(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    weight: float = Field(gt=0, le=100)  # porcentaje
+    grade: float | None = Field(None, ge=1, le=7)  # escala chilena; None = aún no se rinde
+
+
+class GradesIn(BaseModel):
+    meta: float = Field(4.0, ge=1, le=7)  # nota que quiere sacar (aprobar = 4,0)
+    items: list[GradeItem] = Field(max_length=20)
+
+    @model_validator(mode="after")
+    def _suma(self):
+        if sum(i.weight for i in self.items) > 100.001:
+            raise ValueError("Los porcentajes suman más de 100%")
+        return self
+
+
+@router.put("/courses/{id}/grades")
+def put_grades(id: int, body: GradesIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Evaluaciones del ramo para calcular cuánto necesita; el cálculo se hace en la app."""
+    c = get_owned(db, Course, id, user)
+    c.grades = body.model_dump() if body.items else None
     db.commit()
     return course_out(c)
 
@@ -609,7 +635,7 @@ def summary(id: int, today: date = Depends(today_param), user: User = Depends(cu
     p = load_plan(db, s)
     full = semester_out(s, full=True)
     res = calc.summarize(p, today)
-    extra = {c["id"]: {"slots": c["slots"], "makeups": c["makeups"]} for c in full["courses"]}
+    extra = {c["id"]: {k: c[k] for k in ("slots", "makeups", "grades")} for c in full["courses"]}
     res["courses"] = [c | extra[c["id"]] for c in res["courses"]]
     return res | {
         "semester": semester_out(s),

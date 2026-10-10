@@ -1,7 +1,7 @@
 import datetime as dt
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text, Time, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Integer, LargeBinary, String, Text, Time, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -75,6 +75,7 @@ class Course(Base):
     name: Mapped[str] = mapped_column(String(80))
     kind: Mapped[str] = mapped_column(String(1))
     min_pct: Mapped[int] = mapped_column(Integer)
+    grades: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"meta", "items": [{"name", "weight", "grade"}]}
     slots: Mapped[list["Slot"]] = relationship(cascade="all, delete-orphan", order_by="Slot.weekday")
     makeups: Mapped[list["Makeup"]] = relationship(cascade="all, delete-orphan", order_by="Makeup.date")
 

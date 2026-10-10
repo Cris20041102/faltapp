@@ -36,6 +36,9 @@
   </nav>
 
   <dialog id="dlg" class="w-[min(94vw,28rem)] rounded-2xl border border-fg/10 bg-sheet p-0 text-slate-700"><div id="dlg-body"></div></dialog>
+  <div id="waking" class="pointer-events-none fixed inset-x-0 bottom-24 z-30 flex hidden justify-center px-4">
+    <div class="toast-in rounded-full border border-fg/10 bg-sheet px-4 py-2 text-sm font-medium text-fg shadow-lg" role="status">⏳ Despertando el servidor… <span class="text-slate-500">unos segundos</span></div>
+  </div>
   <div id="toast" class="pointer-events-none fixed inset-x-0 top-16 z-50 flex flex-col items-center gap-2 px-4"></div>
 
   <script src="/app.js"></script>

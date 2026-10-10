@@ -2,6 +2,7 @@
 import base64
 import urllib.parse
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -316,6 +317,31 @@ def main():
             expect(page.locator("#dlg select[name=original] option").first).to_have_text("Miércoles 23 de septiembre")  # la más cercana
             page.get_by_role("button", name="Guardar recuperación").click()
             expect(bd).to_contain_text("Clase del 23/09 recuperada el sábado 26 de septiembre")
+
+            # notas: ¿cuánto necesito en el examen? (se calcula al escribir y queda en la tarjeta del ramo)
+            bd.get_by_role("button", name="¿Cuánto necesito en el examen?").click()
+            dlg = page.locator("#dlg")
+            expect(dlg.locator("[data-row]")).to_have_count(3)  # Certamen 1, Certamen 2 y Examen de ejemplo
+            dlg.get_by_label("Nota de Certamen 1").fill("5,5")
+            dlg.get_by_label("Nota de Certamen 2").fill("3")
+            expect(dlg.locator("[data-result]")).to_contain_text("Necesitas 3,7 en Examen")
+            dlg.get_by_role("button", name="Guardar", exact=True).click()
+            expect(bd.locator("[data-grades]")).to_have_text("📝 Necesitas 3,7 en Examen")
+
+            # servidor dormido (como Render tras 15 min sin uso): la app abre igual con lo guardado y avisa que está despertando
+            page.goto(URL + "/#inicio")
+            expect(page.locator("[data-progress]")).to_be_visible()
+            page.wait_for_function("navigator.serviceWorker.controller !== null")
+            waking = page.get_by_text("Despertando el servidor")
+            srv.send_signal(signal.SIGSTOP)  # conexiones colgadas, igual que mientras Render despierta
+            try:
+                page.reload()
+                expect(waking).to_be_visible(timeout=8000)
+                expect(page.locator("[data-progress]")).to_be_visible(timeout=8000)  # lo último guardado
+            finally:
+                srv.send_signal(signal.SIGCONT)
+            expect(waking).to_be_hidden(timeout=10000)
+            expect(page.locator("[data-progress]")).to_be_visible()
             assert not errors, errors
             sw_takeover(b)
             b.close()

@@ -49,7 +49,34 @@ function toast(msg, bad = false) {
   setTimeout(() => { el.classList.add("toast-out"); setTimeout(() => el.remove(), 250); }, 3500);
 }
 
-async function api(method, path, body, { quiet = false } = {}) {
+// Render gratis se duerme tras 15 min: si el servidor tarda, se muestran los datos guardados de la última vez,
+// un aviso de que está despertando, y la pantalla se refresca sola cuando llegan los datos nuevos.
+const SLOW_MS = 2000;
+let pending = 0, slow = false, refreshTimer;
+function waking(p) {
+  pending++;
+  const t = setTimeout(() => { slow = true; $("#waking").classList.remove("hidden"); }, SLOW_MS);
+  return p.finally(() => {
+    clearTimeout(t);
+    if (!--pending) { slow = false; $("#waking").classList.add("hidden"); }
+  });
+}
+const clearSaved = () => { try { Object.keys(localStorage).filter((k) => k.startsWith("api:")).forEach((k) => localStorage.removeItem(k)); } catch { /* sin storage */ } };
+
+async function api(method, path, body, opts) {
+  const net = waking(request(method, path, body, opts));
+  const key = method === "GET" && token ? "api:" + path.replace(/[?&]today=[^&]*/, "") : null; // "today" cambia a diario
+  if (key) net.then((d) => store.set(key, JSON.stringify(d)), () => {});
+  const saved = key && store.get(key);
+  if (!saved) return net;
+  const late = Symbol();
+  const first = slow ? late : await Promise.race([net, new Promise((r) => setTimeout(r, SLOW_MS, late))]);
+  if (first !== late) return first;
+  net.then(() => { clearTimeout(refreshTimer); refreshTimer = setTimeout(render, 100); }, () => {});
+  return JSON.parse(saved);
+}
+
+async function request(method, path, body, { quiet = false } = {}) {
   const r = await fetch("/api" + path, {
     method,
     headers: { ...(body instanceof Blob ? {} : { "Content-Type": "application/json" }), ...(token ? { Authorization: "Bearer " + token } : {}) },
@@ -73,6 +100,7 @@ function logout() {
     method: "DELETE", headers: { "Content-Type": "application/json", Authorization: "Bearer " + t }, body: JSON.stringify({ endpoint: sub.endpoint }),
   })).catch(() => {});
   token = null; ME = null; store.set("token", null);
+  clearSaved();
   location.hash = "#login";
 }
 
@@ -153,6 +181,7 @@ function login(v) {
     e.preventDefault();
     const { token: t } = await api("POST", reg ? "/auth/register" : "/auth/login", formData(e.target));
     token = t; store.set("token", t);
+    clearSaved();
     location.hash = "#inicio";
   };
 }
@@ -170,6 +199,77 @@ const slotsOn = (courses, d) => courses.flatMap((c) => c.slots
   .filter((x) => (x.weekday === weekdayOf(d) && !c.makeups.some((m) => m.original === d)) || c.makeups.some((m) => m.date === d && weekdayOf(m.original) === x.weekday))
   .map((x) => ({ ...x, c }))).sort((a, b) => a.start_time.localeCompare(b.start_time));
 
+// ---------- notas: ¿cuánto necesito? (escala chilena 1,0–7,0) ----------
+const nota = (n) => (Math.round(n * 10 + 1e-9) / 10).toFixed(1).replace(".", ","); // 4,35 → 4,4 (no 4,3 por el redondeo binario)
+const num = (v) => { const t = String(v ?? "").trim().replace(",", "."); return t === "" || isNaN(t) ? null : Number(t); };
+const junto = (xs) => (xs.length > 2 ? `${xs.slice(0, -1).join(", ")} y ${xs.at(-1)}` : xs.join(" y "));
+function gradeCalc(g) { // → nota final si ya rindió todo, o la nota que necesita en lo que queda para llegar a la meta
+  const items = (g?.items || []).filter((i) => i.weight > 0), meta = g?.meta ?? 4;
+  const total = items.reduce((a, i) => a + i.weight, 0);
+  if (!total) return null;
+  const done = items.filter((i) => i.grade != null), rest = items.filter((i) => i.grade == null);
+  const sum = done.reduce((a, i) => a + i.weight * i.grade, 0), wRest = rest.reduce((a, i) => a + i.weight, 0);
+  const prom = done.length ? sum / (total - wRest) : null;
+  if (!wRest) return { meta, total, prom, final: Math.round((sum / total) * 10 + 1e-9) / 10 }; // 3,95 → 4,0
+  // sin contar el redondeo a favor (3,95 → 4,0): mejor que sobre a que falte
+  return { meta, total, prom, rest: rest.map((i) => i.name), need: Math.ceil(((meta * total - sum) / wRest) * 10 - 1e-9) / 10, max: (sum + 7 * wRest) / total };
+}
+const gradeText = (r) => !r ? ""
+  : r.final != null ? `${r.final >= r.meta ? "✅" : "❌"} Nota final ${nota(r.final)}`
+  : r.need <= 1 ? `🎉 Ya tienes el ${nota(r.meta)} asegurado`
+  : r.need > 7 ? `😬 No alcanza: con 7,0 en todo llegarías a ${nota(r.max)}`
+  : `Necesitas ${nota(r.need)} en ${junto(r.rest)}`;
+
+function openGrades(c) {
+  const g = c.grades || { meta: 4, items: [{ name: "Certamen 1", weight: 30 }, { name: "Certamen 2", weight: 30 }, { name: "Examen", weight: 40 }] };
+  const row = (i = {}) => `
+    <div data-row class="grid grid-cols-[1fr_4rem_4rem_2rem] items-center gap-2">
+      <input class="input !mt-0" name="name" maxlength="40" placeholder="Evaluación" value="${esc(i.name ?? "")}" aria-label="Evaluación">
+      <input class="input !mt-0 text-center" name="weight" inputmode="decimal" placeholder="%" value="${i.weight ?? ""}" aria-label="Porcentaje de ${esc(i.name ?? "la evaluación")}">
+      <input class="input !mt-0 text-center" name="grade" inputmode="decimal" placeholder="—" value="${i.grade != null ? nota(i.grade) : ""}" aria-label="Nota de ${esc(i.name ?? "la evaluación")}">
+      <button type="button" data-del-row class="h-8 w-8 rounded-full" aria-label="Quitar evaluación">&#10005;</button>
+    </div>`;
+  openDialog(`
+    <form data-grades-form class="p-5">
+      <div class="flex items-start justify-between gap-2">
+        <div><h2 class="h2">📝 Notas · ${esc(c.name)}</h2><p class="muted">Pon el % de cada evaluación y las notas que ya tienes. Deja vacía la nota de lo que falta.</p></div>
+        <button type="button" data-close class="btn h-9 w-9 shrink-0 !p-0" aria-label="Cerrar">&#10005;</button>
+      </div>
+      <div class="mt-4 grid grid-cols-[1fr_4rem_4rem_2rem] gap-2 px-1 text-xs font-medium text-slate-500"><span>Evaluación</span><span class="text-center">%</span><span class="text-center">Nota</span><span></span></div>
+      <div data-rows class="mt-1 space-y-2">${g.items.map(row).join("")}</div>
+      <button type="button" data-add-row class="mt-2 text-sm font-medium text-indigo-600">+ Agregar evaluación</button>
+      <label class="field mt-3">Nota que quieres sacar<input name="meta" class="input" inputmode="decimal" value="${nota(g.meta)}"></label>
+      <div data-result class="mt-4 rounded-xl bg-indigo-50 p-3 text-sm text-indigo-900" aria-live="polite"></div>
+      <button class="btn-primary mt-4 w-full">Guardar</button>
+    </form>`, (d) => {
+    const f = $("[data-grades-form]", d);
+    const read = () => ({
+      meta: num(f.meta.value) ?? 4,
+      items: $$("[data-row]", f).map((r, n) => ({ name: r.querySelector("[name=name]").value.trim() || `Evaluación ${n + 1}`, weight: num(r.querySelector("[name=weight]").value), grade: num(r.querySelector("[name=grade]").value) }))
+        .filter((i) => i.weight != null || i.grade != null),
+    });
+    const show = () => {
+      const x = read(), r = gradeCalc(x), total = x.items.reduce((a, i) => a + (i.weight || 0), 0);
+      const bad = x.items.some((i) => i.grade != null && (i.grade < 1 || i.grade > 7)) || x.meta < 1 || x.meta > 7;
+      $("[data-result]", f).innerHTML = bad ? "Las notas van de 1,0 a 7,0."
+        : total > 100 ? `Los porcentajes suman ${total}%: no pueden pasar de 100%.`
+        : !r ? "Pon el porcentaje de cada evaluación."
+        : `<p class="font-semibold">${gradeText(r)}</p>${r.prom != null && r.final == null ? `<p class="mt-1">Llevas un ${nota(r.prom)} en lo rendido.</p>` : ""}${total !== 100 ? `<p class="mt-1 opacity-80">Los porcentajes suman ${total}% (calculado sobre ese total).</p>` : ""}`;
+    };
+    const bindRows = () => $$("[data-del-row]", f).forEach((b) => (b.onclick = () => { b.closest("[data-row]").remove(); show(); }));
+    $("[data-add-row]", f).onclick = () => { $("[data-rows]", f).insertAdjacentHTML("beforeend", row()); bindRows(); };
+    bindRows();
+    f.oninput = show;
+    show();
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      await api("PUT", `/courses/${c.id}/grades`, read());
+      toast("Notas guardadas");
+      closeDialog(); render();
+    };
+  });
+}
+
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
@@ -183,6 +283,7 @@ function courseCard(c) {
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
       ${c.makeups.map((m) => `<p class="mt-2 flex items-center gap-2 text-xs text-slate-500"><span class="flex-1">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</span><button data-unmakeup="${m.id}" class="h-7 w-7 shrink-0 rounded-full" aria-label="Quitar recuperación del ${shortDate(m.date)}">&#10005;</button></p>`).join("")}
+      <button data-grades="${c.id}" class="mt-2 block text-left text-sm font-medium text-indigo-600">📝 ${gradeText(gradeCalc(c.grades)) || "¿Cuánto necesito en el examen?"}</button>
       ${c.ir_seguido ? `<p class="mt-2 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">💪 Ve a ${c.ir_seguido.clases === 1 ? "la próxima clase" : `las próximas ${c.ir_seguido.clases} clases`} (hasta el ${shortDate(c.ir_seguido.hasta)}) y después puedes faltar a ${c.ir_seguido.luego === 1 ? "la que queda" : `las ${c.ir_seguido.luego} que quedan`}</p>` : ""}
     </article>`;
 }
@@ -295,6 +396,7 @@ async function inicio(v) {
   }));
   $$("[data-tope-turno]", v).forEach((b) => (b.onclick = () => { store.set(b.dataset.topeTurno, "turno"); render(); }));
   $$("[data-unmakeup]", v).forEach((b) => (b.onclick = async () => { await api("DELETE", `/makeups/${b.dataset.unmakeup}`); render(); }));
+  $$("[data-grades]", v).forEach((b) => (b.onclick = () => openGrades(s.courses.find((c) => c.id === Number(b.dataset.grades)))));
   calendar($("#cal", v), "home", s.calendar, { start: s.semester.start_date, end: s.semester.end_date }, (d) => openDay(s, d), tests);
 }
 
