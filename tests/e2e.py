@@ -13,6 +13,7 @@ import httpx
 from playwright.sync_api import expect, sync_playwright
 
 ROOT = Path(__file__).resolve().parent.parent
+os.environ["PW_EXPERIMENTAL_SERVICE_WORKER_NETWORK_EVENTS"] = "1"  # que context.route vea también lo que pide el service worker
 PORT = 8765
 URL = f"http://127.0.0.1:{PORT}"
 
@@ -393,6 +394,18 @@ def main():
                 srv.send_signal(signal.SIGCONT)
             expect(waking).to_be_hidden(timeout=10000)
             expect(page.locator("[data-progress]")).to_be_visible()
+
+            # Render dormido de verdad no cuelga: a los navegadores les responde al tiro su página "waking up".
+            # Tampoco debe verse ni quedar guardada (la 2ª recarga abriría la copia)
+            render = lambda route: route.fulfill(status=200, content_type="text/html", body="<title>Render</title>SERVICE WAKING UP")
+            page.context.route(URL + "/", render)
+            try:
+                for _ in range(2):
+                    page.reload()
+                    expect(page.locator("[data-progress]")).to_be_visible(timeout=8000)
+                    expect(page.get_by_text("SERVICE WAKING UP")).to_have_count(0)
+            finally:
+                page.context.unroute(URL + "/", render)
             assert not errors, errors
             sw_takeover(b)
             b.close()

@@ -1,4 +1,4 @@
-const CACHE = "faltapp-v1";
+const CACHE = "faltapp-v2"; // v2: borra copias viejas que pudieron guardar la página de Render
 const SHELL = ["/", "/app.js", "/app.css", "/manifest.json", "/icon.svg"];
 
 // La versión nueva toma el control al tiro (si no, queda "esperando" mientras la app esté abierta y los avisos no se muestran)
@@ -6,22 +6,25 @@ self.addEventListener("install", (e) => e.waitUntil(caches.open(CACHE).then((c) 
 self.addEventListener("activate", (e) =>
   e.waitUntil(caches.keys().then((ks) => Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k)))).then(() => self.clients.claim())));
 
-// Red primero, pero si el servidor no responde en 2 s (Render dormido) se usa la copia guardada y la red la
-// actualiza por detrás. Sin conexión: la copia. La API no pasa por aquí (la maneja api() en app.js).
+// Render dormido no cuelga: al navegador le responde al tiro su página "waking up". Eso no es Faltapp, así que ni se
+// muestra ni se guarda (las páginas de Faltapp cargan /app.js; los demás archivos no son HTML)
+const ours = async (r) => r.ok && (!r.headers.get("content-type")?.includes("text/html") || (await r.clone().text()).includes("/app.js"));
+
+// Red primero, pero si el servidor no responde en 2 s o responde algo que no es Faltapp (Render dormido) se usa la
+// copia guardada y la red la actualiza por detrás. Sin conexión: la copia. La API no pasa por aquí (la maneja api() en app.js).
 self.addEventListener("fetch", (e) => {
   const u = new URL(e.request.url);
   if (e.request.method !== "GET" || u.origin !== location.origin || u.pathname.startsWith("/api")) return;
-  const net = fetch(e.request).then((r) => {
-    if (r.ok) {
-      const copy = r.clone();
-      e.waitUntil(caches.open(CACHE).then((c) => c.put(e.request, copy)));
-    }
+  const net = fetch(e.request).then(async (r) => {
+    if (!(await ours(r))) throw r;
+    const copy = r.clone();
+    e.waitUntil(caches.open(CACHE).then((c) => c.put(e.request, copy)));
     return r;
   });
   e.waitUntil(net.catch(() => {})); // aunque ya se haya mostrado la copia, terminar de actualizarla
   e.respondWith(caches.match(e.request, { ignoreSearch: true }).then((saved) => saved
     ? Promise.race([net.catch(() => saved), new Promise((r) => setTimeout(r, 2000, saved))])
-    : net.catch(() => caches.match("/"))));
+    : net.catch((r) => r instanceof Response ? r : caches.match("/"))));
 });
 
 // Notificaciones push: el servidor manda {title, body, url}; al tocarla se abre esa pantalla de Faltapp
