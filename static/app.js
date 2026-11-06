@@ -217,6 +217,8 @@ function gradeCalc(g) { // → nota final si ya rindió todo, o la nota que nece
   // sin contar el redondeo a favor (3,95 → 4,0): mejor que sobre a que falte
   return { meta, total, prom, rest: rest.map((i) => i.name), need: Math.ceil(((meta * total - sum) / wRest) * 10 - 1e-9) / 10, max: (sum + 7 * wRest) / total };
 }
+// rojo: reprobado o no alcanza ni con 7,0; amarillo: necesita más de un 5,5 en lo que queda
+const riskOf = (r) => !r ? null : (r.final ?? 7) < r.meta || r.need > 7 ? "red" : r.need > 5.5 ? "yellow" : null;
 const gradeText = (r) => !r ? ""
   : r.final != null ? `${r.final >= r.meta ? "✅" : "❌"} Nota final ${nota(r.final)}`
   : r.need <= 1 ? `🎉 Ya tienes el ${nota(r.meta)} asegurado`
@@ -293,18 +295,29 @@ async function notas(v) {
   const gs = asignaturas((await api("GET", `/semesters/${sem.id}`)).courses);
   const items = (g) => [...(g.anchor.grades?.items || [])].sort((a, b) => (a.date || "9").localeCompare(b.date || "9"));
   const next = gs.flatMap((g) => items(g).filter((i) => i.date >= today() && i.grade == null).map((i) => ({ ...i, g }))).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
+  const calc = gs.map((g) => ({ g, r: gradeCalc(g.anchor.grades) }));
+  const now = calc.map(({ r }) => r?.final ?? r?.prom).filter((x) => x != null); // nota final o lo que lleva en lo rendido
+  const avg = now.length && now.reduce((a, x) => a + x, 0) / now.length, risky = calc.filter(({ r }) => riskOf(r));
   v.innerHTML = `
     <div class="flex items-end justify-between">
       <div><h1 class="h1">Notas</h1><p class="muted">Cuánto necesitas en cada ramo para aprobar.</p></div>
       <a href="#importar" class="text-sm font-medium text-indigo-600">Importar de Phoenix</a>
     </div>
+    ${now.length ? `
+      <section class="card mt-4">
+        <div class="flex items-baseline gap-2"><span data-promedio class="text-4xl font-bold ${avg < 4 ? "text-red-600" : ""}">${nota(avg)}</span><span class="text-sm text-slate-600">promedio del semestre</span></div>
+        <p class="text-xs text-slate-500">Promedio simple de ${now.length} ramo${now.length === 1 ? "" : "s"} con notas, con lo rendido hasta ahora.</p>
+        ${risky.length ? `<p class="mt-3 text-sm font-semibold">⚠️ En riesgo</p><ul data-riesgo class="mt-1 space-y-1 text-sm">${risky.map(({ g, r }) => `
+          <li><span class="font-medium">${esc(g.name)}</span> <span class="${riskOf(r) === "red" ? "text-red-600" : "text-yellow-600"}">· ${gradeText(r)}</span></li>`).join("")}</ul>`
+        : `<p class="mt-3 text-sm font-medium text-green-700">✅ Ningún ramo en riesgo</p>`}
+      </section>` : ""}
     ${next.length ? `
       <section class="card mt-4"><h2 class="h2">Próximas evaluaciones</h2>
         <ul class="mt-2 space-y-1 text-sm">${next.map((i) => `<li class="flex gap-3"><span class="w-28 shrink-0 font-medium">${longDate(i.date).split(" ")[0]} ${shortDate(i.date)}</span><span>${esc(i.name)} <span class="text-slate-500">· ${esc(i.g.name)}</span></span></li>`).join("")}</ul>
       </section>` : ""}
     <section class="mt-4 grid gap-3 sm:grid-cols-2">${gs.map((g) => {
-      const r = gradeCalc(g.anchor.grades), list = items(g);
-      const tone = !r ? "text-slate-500" : (r.final ?? 7) < r.meta || r.need > 7 ? "text-red-600" : r.need > 5.5 ? "text-yellow-600" : "text-green-600";
+      const r = gradeCalc(g.anchor.grades), list = items(g), risk = riskOf(r);
+      const tone = !r ? "text-slate-500" : risk === "red" ? "text-red-600" : risk === "yellow" ? "text-yellow-600" : "text-green-600";
       return `
       <article data-asignatura="${esc(g.name)}" class="card">
         <div class="flex items-start justify-between gap-2"><h3 class="font-semibold leading-tight">${esc(g.name)}</h3>
