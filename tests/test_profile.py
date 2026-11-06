@@ -13,12 +13,13 @@ def later(monkeypatch, days):
 
 def test_editar_perfil(client):
     h = register(client)
-    body = {"bio": "Ingeniero en proceso", "career": "Ing. en Computación", "year": 3,
-            "status": "En la biblioteca", "banner_color": "#16a34a"}
-    r = client.patch("/api/me", headers=h, json=body)
+    body = {"bio": "Ingeniero en proceso", "year": 3, "status": "En la biblioteca", "banner_color": "#16a34a"}
+    r = client.patch("/api/me", headers=h, json=body | {"career": "Lo que yo quiera"})  # la carrera no se escribe a mano
     assert r.status_code == 200, r.text
     got = client.get("/api/me", headers=h).json()
-    assert {k: got[k] for k in body} == body
+    assert {k: got[k] for k in body} == body and got["career"] == ""
+    long = "Ingeniería en Biotecnología Mención en Alimentos o Procesos Sustentables"  # 72 caracteres
+    assert client.put("/api/me/career", headers=h, json={"career": f" {long} "}).json()["career"] == long
     assert got["avatar_url"] is None and got["username_next_change"] is None
 
 

@@ -28,7 +28,7 @@ def main():
 
     def phoenix(route):
         name = route.request.url.split("/")[-1]
-        files = {"fx_informacion_asistencia.php": "phoenix_demo.html", "fx_informacion_nota.php": "phoenix_notas_demo.html"}
+        files = {"fx_informacion_asistencia.php": "phoenix_demo.html", "fx_informacion_nota.php": "phoenix_notas_demo.html", "fx_informacion_hoja_vida.php": "phoenix_hoja_vida_demo.html"}
         html = (ROOT / "tests" / "fixtures" / files[name]).read_text(encoding="utf-8") if name in files else "<!doctype html><title>Phoenix</title><p>Inicio"
         route.fulfill(body=html.encode("cp1252", errors="replace"), headers={"content-type": "text/html; charset=iso8859-1"})
 
@@ -57,6 +57,7 @@ def main():
         lab = next(r for r in read["asistencia"] if r["section"] == "[L-1]" and r["name"] == "Bases de Datos I")
         assert lab["absent"] == ["2026-08-19", "2026-08-26"] and lab["justified"] == ["2026-09-02"], lab
         assert read["notas"], "no leyó las notas"
+        assert read["carrera"] == "Ingeniería en Computación", read["carrera"]
         imp.wait_for_event("close", timeout=10000)
         assert sw.evaluate("chrome.action.getBadgeText({})") == "✓"
 

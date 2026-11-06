@@ -116,7 +116,6 @@ class ProfilePatch(BaseModel):
     display_name: str | None = Field(None, min_length=1, max_length=60)
     username: str | None = None
     bio: str | None = Field(None, max_length=160)
-    career: str | None = Field(None, max_length=60)
     year: int | None = Field(None, ge=1, le=7)
     status: str | None = Field(None, max_length=60)
     banner_color: str | None = Field(None, pattern=r"^#[0-9a-fA-F]{6}$")
@@ -711,8 +710,23 @@ def list_friends(user: User = Depends(current_user), db: Session = Depends(get_d
     return out
 
 
+class CareerIn(BaseModel):
+    career: str = Field(min_length=2, max_length=120)
+
+
+@router.put("/me/career")
+def put_career(body: CareerIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """La carrera la trae el portal de la universidad al importar (no se escribe a mano en el perfil)."""
+    user.career = body.career.strip()
+    db.commit()
+    return me_out(user)
+
+
 @router.get("/friends/suggestions")
 def friend_suggestions(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Solo gente de la misma carrera: primero con amigos en común, después los más nuevos."""
+    if not user.career:
+        return []  # sin carrera (aún no importa del portal): Inicio le pide importar
     # ponytail: carga todas las amistades aceptadas en memoria; pasar a un JOIN en SQL si hay miles de usuarios
     adj: dict[int, set[int]] = {}
     for a, b in db.execute(select(Friendship.requester_id, Friendship.addressee_id).where(Friendship.status == "accepted")):
@@ -721,9 +735,11 @@ def friend_suggestions(user: User = Depends(current_user), db: Session = Depends
     mine = adj.get(user.id, set())
     related = {user.id} | set(db.scalars(select(Friendship.requester_id).where(Friendship.addressee_id == user.id))) \
         | set(db.scalars(select(Friendship.addressee_id).where(Friendship.requester_id == user.id)))
-    mutual = {x: len(adj[x] & mine) for f in mine for x in adj[f] if x not in related}
+    same = set(db.scalars(select(User.id).where(User.career == user.career)))
+    mutual = {x: len(adj[x] & mine) for f in mine for x in adj[f] if x not in related and x in same}
     ids = sorted(mutual, key=lambda x: (-mutual[x], -x))[:10]
-    ids += db.scalars(select(User.id).where(User.id.not_in(related | set(ids))).order_by(User.id.desc()).limit(10 - len(ids))).all()
+    ids += db.scalars(select(User.id).where(User.career == user.career, User.id.not_in(related | set(ids)))
+                      .order_by(User.id.desc()).limit(10 - len(ids))).all()
     return [user_out(db.get(User, i)) | {"mutual": mutual.get(i, 0)} for i in ids]
 
 

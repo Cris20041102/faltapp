@@ -30,7 +30,7 @@ def new_tab(page):
 
 def run_bookmark(page, href, asistencia, notas):
     """Simula Phoenix (en latin-1, como el real) y toca el marcador desde otra página de Phoenix: trae las dos solo."""
-    files = {"fx_informacion_asistencia.php": asistencia, "fx_informacion_nota.php": notas}
+    files = {"fx_informacion_asistencia.php": asistencia, "fx_informacion_nota.php": notas, "fx_informacion_hoja_vida.php": "phoenix_hoja_vida_demo.html"}
 
     def phoenix(route):
         f = files.get(route.request.url.split("/")[-1])
@@ -178,6 +178,7 @@ def main():
             page.goto(URL + "/#inicio")
             card = page.locator("[data-course]").filter(has_text="Bases de Datos")
             expect(card.locator("[data-quedan]")).to_have_text("4")
+            expect(page.locator("[data-career-banner]")).to_be_visible()  # aún sin carrera: se la invita a importar
             day = page.locator('[data-date="2026-10-07"]')
 
             def show_day():  # navegar hasta octubre, venga de donde venga "hoy"
@@ -259,6 +260,12 @@ def main():
             imp.wait_for_url("**/#inicio")
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
 
+            # la carrera llegó de Phoenix (Hoja de Vida): ya no se invita a importar y el perfil la muestra
+            expect(imp.locator("[data-career-banner]")).to_have_count(0)
+            imp.goto(URL + "/#perfil")
+            expect(imp.locator("[data-profile]")).to_contain_text("Ingeniería en ComputaciónDesde Phoenix")
+            imp.goto(URL + "/#inicio")
+
             # marcar en 1 toque desde Inicio (últimas clases), sirve igual en PC, Android y iPhone
             q = imp.locator("[data-quick]").first
             was = q.get_attribute("aria-pressed") == "true"
@@ -297,7 +304,7 @@ def main():
             page.goto(URL + "/#perfil")
             expect(page.get_by_role("button", name="Activar notificaciones")).to_be_visible()
             page.goto(URL + "/#inicio")
-            page.get_by_role("button", name="Cerrar aviso").click()
+            page.locator("[data-push-dismiss]").click()  # (esta pestaña aún muestra también el aviso de la carrera)
             expect(page.get_by_text("Activa las notificaciones")).to_be_hidden()
             page.reload()
             expect(page.locator("[data-progress]")).to_be_visible()

@@ -24,7 +24,7 @@ class User(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     # perfil
     bio: Mapped[str] = mapped_column(String(160), default="", server_default="")
-    career: Mapped[str] = mapped_column(String(60), default="", server_default="")
+    career: Mapped[str] = mapped_column(String(120), default="", server_default="")  # la trae el portal de la universidad al importar
     year: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(60), default="", server_default="")
     banner_color: Mapped[str] = mapped_column(String(7), default="#713dff", server_default="#713dff")

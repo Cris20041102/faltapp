@@ -365,6 +365,7 @@ async function inicio(v) {
   if (!sem) { location.hash = "#semestre"; return; }
   const [s, pstate] = await Promise.all([api("GET", `/semesters/${sem.id}/summary?today=${today()}`), pushState()]);
   const pushBanner = ["off", "ios"].includes(pstate) && !store.get("push-banner-off");
+  const careerBanner = !ME.career && !store.get("career-banner-off");
   const wd = Object.entries(s.weekdays);
   // las 2 últimas jornadas con clases (hasta hoy): marcar una falta es 1 toque, sin buscar en el calendario
   const recent = Object.keys(s.calendar).filter((d) => d <= today() && s.calendar[d] !== "gris").sort().slice(-2).reverse();
@@ -413,6 +414,14 @@ async function inicio(v) {
           <p class="text-sm">Te avisamos de pruebas, de cuando te quedan pocas faltas y de tus amigos.</p>
           ${pstate === "ios" ? `<a href="#perfil" class="btn mt-2">Cómo activarlas en iPhone</a>` : `<button data-push-on class="btn-primary mt-2">Activar</button>`}</div>
         <button data-push-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso">&#10005;</button>
+      </section>` : ""}
+    ${careerBanner ? `
+      <section data-career-banner class="mt-4 flex items-start gap-3 rounded-2xl bg-indigo-50 p-4 text-indigo-900">
+        <span class="text-2xl" aria-hidden="true">🎓</span>
+        <div class="flex-1"><p class="font-semibold">Encuentra a tus compañeros de carrera</p>
+          <p class="text-sm">Importa desde Phoenix y te recomendamos gente de tu misma carrera.</p>
+          <a href="#importar" class="btn-primary mt-2">Importar de Phoenix</a></div>
+        <button data-career-dismiss class="h-8 w-8 shrink-0 text-indigo-700" aria-label="Cerrar aviso">&#10005;</button>
       </section>` : ""}
     ${topes.map(tope).join("")}
     ${pruebas.length ? `
@@ -469,6 +478,8 @@ async function inicio(v) {
   bindPush(v);
   const dismiss = $("[data-push-dismiss]", v);
   if (dismiss) dismiss.onclick = () => { store.set("push-banner-off", "1"); render(); };
+  const careerOff = $("[data-career-dismiss]", v);
+  if (careerOff) careerOff.onclick = () => { store.set("career-banner-off", "1"); render(); };
   $$("[data-quick]", v).forEach((b) => (b.onclick = async () => {
     const r = await api(b.getAttribute("aria-pressed") === "true" ? "DELETE" : "POST", "/absences", { date: b.dataset.quick, slot_ids: [Number(b.dataset.slotId)] });
     r?.warnings?.forEach((m) => toast("⚠ " + m));
@@ -818,7 +829,7 @@ async function perfil(v) {
       <label class="field col-span-2">Nombre público<input class="input" name="display_name" required maxlength="60" value="${esc(ME.display_name)}" ${ME.display_name_next_change ? "disabled" : ""}>${hint(ME.display_name_next_change, 14)}</label>
       <label class="field col-span-2">Usuario (@)<input class="input" name="username" required pattern="[a-z0-9_.]{3,30}" autocapitalize="none" value="${esc(ME.username)}" ${ME.username_next_change ? "disabled" : ""}>${hint(ME.username_next_change, 30)}</label>
       <label class="field col-span-2">Estado<input class="input" name="status" maxlength="60" value="${esc(ME.status)}" placeholder="Ej: Sobreviviendo a certámenes"></label>
-      <label class="field">Carrera<input class="input" name="career" maxlength="60" value="${esc(ME.career)}" placeholder="Ej: Ing. Civil Industrial"></label>
+      <div class="field">Carrera<p class="mt-2 text-sm font-normal">${ME.career ? esc(ME.career) : "—"}</p><small class="block text-xs font-normal text-slate-400">${ME.career ? "Desde Phoenix" : "Se completa al importar de Phoenix"}</small></div>
       <label class="field">Año<select class="input" name="year"><option value="">—</option>${[1, 2, 3, 4, 5, 6, 7].map((y) => `<option value="${y}" ${ME.year === y ? "selected" : ""}>${y}º año</option>`).join("")}</select></label>
       <label class="field col-span-2">Descripción<textarea class="input" name="bio" rows="3" maxlength="160">${esc(ME.bio)}</textarea></label>
       <fieldset class="col-span-2"><legend class="field">Color del banner</legend><div class="mt-2 flex flex-wrap gap-3">${BANNERS.map((c) => `
@@ -868,6 +879,7 @@ async function amigos(v) {
       <button class="btn-primary shrink-0">Agregar</button>
     </form>
     ${f.incoming.length ? `<section class="card mt-4"><h2 class="h2">Solicitudes</h2><ul class="divide-y divide-slate-100">${f.incoming.map((u) => person(u, `<button data-accept="${u.id}" class="btn-primary">Aceptar</button><button data-remove="${u.id}" class="btn">Rechazar</button>`)).join("")}</ul></section>` : ""}
+    ${!sug.length && !ME.career ? `<p class="mt-4 text-sm text-slate-500">🎓 <a href="#importar" class="font-medium text-indigo-600">Importa desde Phoenix</a> para ver compañeros de tu carrera.</p>` : ""}
     ${sug.length ? `<section class="card mt-4"><h2 class="h2">Personas que quizás conozcas</h2><ul class="divide-y divide-slate-100">${sug.map((u) => person(u, `<button data-suggest="${esc(u.username)}" class="btn-primary">Agregar</button>`, common(u.mutual))).join("")}</ul></section>` : ""}
     <section class="card mt-4"><h2 class="h2">Tus amigos</h2>
       <ul class="divide-y divide-slate-100">${f.friends.map((u) => person(u, `<button data-cal="${u.id}" class="btn">Ver días</button>`)).join("") || `<li class="py-3 text-sm text-slate-400">Todavía no agregas a nadie.</li>`}</ul>
@@ -1033,10 +1045,12 @@ async function agenda(v, arg) {
 // ---------- importar desde Phoenix (ULS) ----------
 const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php";
 
-const PHOENIX_PAGES = { asistencia: "/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php", notas: "/modulos/bitacora/alumnos/informacion/fx_informacion_nota.php" };
+const PHOENIX_PAGES = { asistencia: "/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php", notas: "/modulos/bitacora/alumnos/informacion/fx_informacion_nota.php",
+  carrera: ["/modulos/bitacora/alumnos/informacion/fx_informacion_hoja_vida.php", "Año Ingreso - Carrera"] };
 
 // Corre DENTRO del portal (Phoenix) como marcador, con la sesión iniciada. Solo COPIA las páginas: por cada fila de tabla,
 // sus clases y por celda [texto (<br> = salto de línea), clases de la celda y sus íconos, colspan, 1 si trae otra tabla].
+// Si la página va con una etiqueta ([dirección, "Etiqueta"]) copia solo esa fila (una celda con su texto): nada más de la página.
 // Abre Faltapp con eso en el # (no viaja al servidor hasta importar). La lectura la hace Faltapp (READERS): los arreglos
 // llegan sin renovar el marcador. Respeta el charset de la página (Phoenix responde en latin-1).
 // Sin comentarios // adentro: va en una URL.
@@ -1045,15 +1059,19 @@ async function grabPages(origin, pages) {
   msg.textContent = "Trayendo tus faltas y notas…";
   msg.style.cssText = "position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:999px;background:#713dff;color:#fff;font:600 15px/1.3 system-ui,sans-serif;box-shadow:0 4px 20px #0004";
   document.body.append(msg);
-  const snap = async (url) => {
+  const snap = async (url, label) => {
     const r = await fetch(url);
     const doc = new DOMParser().parseFromString(new TextDecoder(/charset=([\w-]+)/i.exec(r.headers.get("content-type"))?.[1] || "utf-8").decode(await r.arrayBuffer()), "text/html");
     doc.querySelectorAll("br").forEach((b) => b.replaceWith("\n"));
+    if (label) {
+      const l = [...doc.querySelectorAll("label")].find((x) => x.textContent.trim().startsWith(label));
+      return l ? [["", [[(l.closest(".row") || l.parentElement).textContent.replace(/\s+/g, " ").trim(), "", 1, 0]]]] : [];
+    }
     return [...doc.querySelectorAll("tr")].map((tr) => [tr.className, [...tr.children].map((td) => td.querySelector("table") ? ["", "", td.colSpan, 1]
       : [td.textContent.trim(), [td, ...td.querySelectorAll("[class]")].map((e) => e.className).join(" ").trim(), td.colSpan, 0])]);
   };
   const got = {};
-  for (const [k, url] of Object.entries(pages)) got[k] = await snap(url).catch(() => []);
+  for (const [k, page] of Object.entries(pages)) got[k] = await snap(...[].concat(page)).catch(() => []);
   msg.remove();
   if (!Object.values(got).some((rows) => rows.length)) return alert("No encontré tus datos. Inicia sesión y vuelve a tocar el marcador.");
   location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ portal: location.host, pages: got, v: 4 }));
@@ -1064,8 +1082,8 @@ const hasClass = (cell, ...cls) => cls.some((c) => (cell?.[1] || "").split(/\s+/
 
 // Phoenix (ULS). Asistencia: fecha + ✔/✖ por ramo y sección; la ausencia justificada ("−") cuenta como asistencia y se
 // muestra aparte. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial\n33.3%") con su nota (0.0 = sin
-// nota) y el peso de teoría/lab ("Promedio Teoría\n60%").
-function readPhoenix({ asistencia: rowsA = [], notas: rowsN = [] }) {
+// nota) y el peso de teoría/lab ("Promedio Teoría\n60%"). Carrera: "Año Ingreso - Carrera: 2023 - [2534/0010] Ingeniería en Computación".
+function readPhoenix({ asistencia: rowsA = [], notas: rowsN = [], carrera: rowsC = [] }) {
   const asistencia = [], notas = [];
   let name = "", dates = [], head = [];
   for (const [cls, cells] of rowsA) {
@@ -1094,7 +1112,8 @@ function readPhoenix({ asistencia: rowsA = [], notas: rowsN = [] }) {
       notas.push({ name, section: first, evals, shares });
     }
   }
-  return { asistencia, notas };
+  const carrera = (rowsC[0]?.[1][0]?.[0] || "").match(/\]\s*([^\]]+)$/)?.[1].trim() || null;
+  return { asistencia, notas, carrera };
 }
 const READERS = { "phoenix.cic.userena.cl": readPhoenix };
 
@@ -1191,12 +1210,14 @@ async function importar(v, arg) {
   let d = null;
   try { d = arg && JSON.parse(decodeURIComponent(arg)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
   if (Array.isArray(d)) d = d.every((r) => Array.isArray(r.evals)) ? { notas: d } : { asistencia: d }; // marcadores antiguos: una sola página
-  const stale = d && !d.pages; // los marcadores que leían dentro de Phoenix: hay que renovarlos una última vez
-  if (d?.pages) d = READERS[d.portal]?.(d.pages);
+  const stale = d && !d.pages, portal = d?.pages && d.portal; // stale: los marcadores que leían dentro de Phoenix
+  if (portal) d = READERS[portal]?.(d.pages);
+  if (d?.carrera && d.carrera !== ME.career) ME = await api("PUT", "/me/career", { career: d.carrera }).catch(() => ME);
   const asis = (d?.asistencia || []).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present));
   const ph = Object.values((d?.notas || []).filter((r) => Array.isArray(r.evals)).reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
   if (!asis.length && !ph.length) return importHelp(v);
   if (stale) toast("Tu marcador de Phoenix está desactualizado: bórralo y vuelve a guardarlo desde Importar (el nuevo ya no hay que renovarlo)", true);
+  else if (portal && !d.carrera && !ME.career) toast("Para traer tu carrera, vuelve a guardar el marcador desde Importar", true);
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
   const { courses } = await api("GET", `/semesters/${sem.id}`);
@@ -1366,6 +1387,7 @@ const bindTheme = (v) => $$("[data-theme-pick]", v).forEach((b) => (b.onclick = 
 // ---------- router ----------
 const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda, notas };
 let shown = null; // pantalla que se ve ahora: solo se anima al cambiar de pantalla, no al refrescar la misma
+let renderSeq = 0;
 async function render() {
   const [name, arg] = location.hash.slice(1).split("/");
   const route = routes[name] ? name : token ? "inicio" : "login";
@@ -1373,17 +1395,22 @@ async function render() {
   if (token && route === "login") { location.hash = "#inicio"; return; }
   $("#nav").classList.toggle("hidden", route === "login");
   $$("#nav [data-route]").forEach((a) => a.classList.toggle("text-indigo-600", a.dataset.route === route));
-  const v = $("#view"), changed = route !== shown;
+  const v = $("#view"), changed = route !== shown, seq = ++renderSeq;
   document.title = "Faltapp";
   if (changed && shown) v.classList.add("leaving"); // la pantalla anterior se desenfoca mientras carga la nueva
   try {
     if (token && !ME) ME = await api("GET", "/me");
     $("#hdr").innerHTML = ME ? `<a href="#perfil" class="flex items-center gap-2 opacity-95">${avatar(ME, "sm")}@${esc(ME.username)}</a>` : "";
-    await routes[route](v, arg);
+    // cada pantalla se arma aparte y entra solo si sigue siendo la última pedida: una más lenta no pisa a la nueva
+    const box = document.createElement("div");
+    await routes[route](box, arg);
+    if (seq !== renderSeq || !box.childNodes.length) return; // otra pantalla en camino, o esta redirigió
+    v.replaceChildren(box);
     if (ME) { refreshBadge(); syncPush(); }
   } catch (e) {
     console.warn(e); // el error ya se mostró como toast
   }
+  if (seq !== renderSeq) return;
   v.classList.remove("leaving");
   if (changed) {
     shown = route;
