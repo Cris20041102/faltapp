@@ -229,7 +229,8 @@ def slot_out(s: Slot) -> dict:
 
 def course_out(c: Course) -> dict:
     return {"id": c.id, "name": c.name, "kind": c.kind, "min_pct": c.min_pct, "slots": [slot_out(s) for s in c.slots],
-            "makeups": [{"id": m.id, "original": m.original, "date": m.date} for m in c.makeups], "grades": c.grades}
+            "makeups": [{"id": m.id, "original": m.original, "date": m.date} for m in c.makeups], "grades": c.grades,
+            "justified": c.justified or []}
 
 
 def semester_out(s: Semester, full: bool = False) -> dict:
@@ -562,7 +563,8 @@ def mark_rest(id: int, body: RestIn, user: User = Depends(current_user), db: Ses
 class ImportItem(BaseModel):
     course_id: int
     absent: list[date] = Field([], max_length=300)
-    present: list[date] = Field([], max_length=300)
+    present: list[date] = Field([], max_length=300)  # incluye las justificadas
+    justified: list[date] | None = Field(None, max_length=300)  # None: marcador antiguo, no las trae
 
 
 class ImportIn(BaseModel):
@@ -630,8 +632,11 @@ def import_absences(body: ImportIn, user: User = Depends(current_user), db: Sess
     added = removed = 0
     skipped, makeups = [], []
     antes = quedan_por_ramo(db, user)
+    justified: dict[Course, set[str]] = {}
     for it in body.items:
         c = get_owned(db, Course, it.course_id, user)
+        if it.justified is not None:  # Phoenix manda: reemplaza las de antes (juntando secciones del mismo ramo)
+            justified.setdefault(c, set()).update(d.isoformat() for d in it.justified)
         s = db.get(Semester, c.semester_id)
         covered = {d for d in it.absent + it.present if s.start_date <= d <= s.end_date}
         if covered and c.slots:
@@ -649,6 +654,8 @@ def import_absences(body: ImportIn, user: User = Depends(current_user), db: Sess
                 elif not absent and have:
                     db.delete(have)
                     removed += 1
+    for c, ds in justified.items():
+        c.justified = sorted(ds)
     db.commit()
     alertar_faltas(db, user, antes)
     return {"added": added, "removed": removed, "skipped": skipped, "makeups": makeups}
@@ -660,7 +667,7 @@ def summary(id: int, today: date = Depends(today_param), user: User = Depends(cu
     p = load_plan(db, s)
     full = semester_out(s, full=True)
     res = calc.summarize(p, today)
-    extra = {c["id"]: {k: c[k] for k in ("slots", "makeups", "grades")} for c in full["courses"]}
+    extra = {c["id"]: {k: c[k] for k in ("slots", "makeups", "grades", "justified")} for c in full["courses"]}
     res["courses"] = [c | extra[c["id"]] for c in res["courses"]]
     return res | {
         "semester": semester_out(s),

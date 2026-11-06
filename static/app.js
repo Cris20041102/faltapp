@@ -342,6 +342,7 @@ function courseCard(c) {
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
       ${c.makeups.map((m) => `<p class="mt-2 flex items-center gap-2 text-xs text-slate-500"><span class="flex-1">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</span><button data-unmakeup="${m.id}" class="h-7 w-7 shrink-0 rounded-full" aria-label="Quitar recuperación del ${shortDate(m.date)}">&#10005;</button></p>`).join("")}
+      ${c.justified?.length ? `<p class="mt-2 text-xs text-slate-500">✅ Justificadas: ${c.justified.map(shortDate).join(", ")}</p>` : ""}
       ${c.ir_seguido ? `<p class="mt-2 rounded-lg bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700">💪 Ve a ${c.ir_seguido.clases === 1 ? "la próxima clase" : `las próximas ${c.ir_seguido.clases} clases`} (hasta el ${shortDate(c.ir_seguido.hasta)}) y después puedes faltar a ${c.ir_seguido.luego === 1 ? "la que queda" : `las ${c.ir_seguido.luego} que quedan`}</p>` : ""}
     </article>`;
 }
@@ -461,6 +462,7 @@ function openDay(s, day) {
   const slots = slotsOn(s.courses, day);
   const marked = new Set(s.absences.filter((a) => a.date === day).map((a) => a.slot_id));
   const events = s.events.filter((e) => e.date === day);
+  const justified = s.courses.filter((c) => c.justified?.includes(day)); // ?.: datos guardados de antes no lo traen
   const past = day < today();
   openDialog(`
     <div class="p-5">
@@ -469,6 +471,7 @@ function openDay(s, day) {
         <button data-close class="btn h-9 w-9 !p-0" aria-label="Cerrar">&#10005;</button>
       </div>
       ${events.map((e) => `<div class="mt-3 rounded-xl ${e.kind === "prueba" ? "bg-red-50 text-red-800" : "bg-sky-50 text-sky-800"} px-3 py-2 text-sm"><b>${KINDS[e.kind]}${e.course_id ? ` · ${esc(s.courses.find((c) => c.id === e.course_id)?.name ?? "")}` : ""}</b> · ${esc(e.title)}${e.time ? ` · ${e.time}` : ""}</div>`).join("")}
+      ${justified.map((c) => `<div class="mt-3 rounded-xl bg-green-50 px-3 py-2 text-sm text-green-700"><b>Ausencia justificada</b> · ${esc(c.name)}</div>`).join("")}
       ${slots.length ? `
       <p class="mt-4 text-sm font-medium text-slate-600">Marca las clases a las que ${past ? "faltaste" : "vas a faltar"}:</p>
       <ul class="mt-2 space-y-2">${slots.map((x) => `
@@ -980,7 +983,7 @@ const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informa
 
 // Corre DENTRO de Phoenix como marcador: desde cualquier página de Phoenix (con sesión iniciada) trae el Registro de
 // Asistencia y las Notas Parciales y abre Faltapp con los datos en el # (no viajan al servidor hasta importar).
-// Asistencia: fecha + ✔/✖ por ramo y sección; la ausencia justificada (ícono "−") cuenta como asistencia. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial<br>33.3%")
+// Asistencia: fecha + ✔/✖ por ramo y sección; la ausencia justificada (ícono "−") cuenta como asistencia y se muestra aparte. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial<br>33.3%")
 // con su nota (0.0 = sin nota) y el peso de teoría/lab ("Promedio Teoría<br>60%"). Phoenix responde en latin-1.
 // Sin comentarios // adentro: va en una URL.
 async function phoenixGrab(origin) {
@@ -1002,7 +1005,7 @@ async function phoenixGrab(origin) {
       else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
       else if (/^\[[TL]-\d+\]$/.test(first)) {
         const pick = (sel) => dates.filter((d, i) => /^\d{4}-/.test(d) && tds[i]?.querySelector(sel));
-        asistencia.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check,.fa-minus") });
+        asistencia.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check,.fa-minus"), justified: pick(".fa-minus") });
       }
     }
     name = "";
@@ -1024,7 +1027,7 @@ async function phoenixGrab(origin) {
   } catch (e) { console.warn(e); }
   msg.remove();
   if (!asistencia.length && !notas.length) return alert("No encontré tus faltas ni tus notas. Entra a Phoenix con tu cuenta y vuelve a tocar el marcador.");
-  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ asistencia, notas, v: 2 }));
+  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ asistencia, notas, v: 3 }));
 }
 
 // "Progr. Avanzada" ≈ "Programación Avanzada": proporción de palabras donde una es el inicio de la otra
@@ -1123,7 +1126,7 @@ async function importar(v, arg) {
   const asis = (d?.asistencia || []).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present));
   const ph = Object.values((d?.notas || []).filter((r) => Array.isArray(r.evals)).reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
   if (!asis.length && !ph.length) return importHelp(v);
-  if (asis.length && !d.v) toast("Tu marcador de Phoenix es antiguo y no cuenta las ausencias justificadas: bórralo y vuelve a guardarlo desde Importar", true);
+  if (asis.length && (d.v || 0) < 3) toast("Tu marcador de Phoenix está desactualizado (no trae las ausencias justificadas): bórralo y vuelve a guardarlo desde Importar", true);
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
   const { courses } = await api("GET", `/semesters/${sem.id}`);
@@ -1140,7 +1143,7 @@ async function importar(v, arg) {
   const rows = [...rowsA, ...rowsN], known = (x) => map[x.key] === "" || x.opts.some(([id]) => id === map[x.key]);
 
   const run = async (pick) => {
-    const items = rowsA.filter(pick).map((x) => ({ course_id: Number(pick(x)), absent: x.r.absent, present: x.r.present }));
+    const items = rowsA.filter(pick).map((x) => ({ course_id: Number(pick(x)), absent: x.r.absent, present: x.r.present, justified: x.r.justified }));
     const marks = rowsN.filter(pick);
     if (!items.length && !marks.length) { toast("Elige al menos un ramo", true); return; }
     if (items.length) {

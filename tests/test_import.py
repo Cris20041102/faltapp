@@ -73,3 +73,20 @@ def test_recuperacion_a_mano(client):
     assert client.delete(f"/api/makeups/{mid}", headers=h).status_code == 204
     sm = summary(client, h, s["id"])
     assert (sm["courses"][0]["makeups"], sm["calendar"]["2026-10-10"]) == ([], "gris")
+
+
+def test_importar_justificadas(client):
+    """La justificada cuenta como asistencia (borra la falta a mano) y se guarda para mostrarla; Phoenix manda."""
+    h = register(client)
+    s = new_semester(client, h)
+    c = new_course(client, h, s["id"])  # miércoles
+    client.post("/api/absences", headers=h, json={"date": "2026-09-02"})
+    item = {"course_id": c["id"], "absent": [], "present": ["2026-09-02", "2026-09-09"], "justified": ["2026-09-09", "2026-09-02"]}
+    r = client.post("/api/absences/import", headers=h, json={"items": [item]}).json()
+    assert (r["added"], r["removed"]) == (0, 1)
+    course = lambda: next(x for x in summary(client, h, s["id"])["courses"] if x["id"] == c["id"])
+    assert course()["justified"] == ["2026-09-02", "2026-09-09"]
+    client.post("/api/absences/import", headers=h, json={"items": [item | {"justified": ["2026-09-09"]}]})
+    assert course()["justified"] == ["2026-09-09"]  # Phoenix la quitó
+    client.post("/api/absences/import", headers=h, json={"items": [{k: v for k, v in item.items() if k != "justified"}]})
+    assert course()["justified"] == ["2026-09-09"]  # marcador antiguo: no trae justificadas, no las borra

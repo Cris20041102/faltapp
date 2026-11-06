@@ -76,6 +76,7 @@ class Course(Base):
     kind: Mapped[str] = mapped_column(String(1))
     min_pct: Mapped[int] = mapped_column(Integer)
     grades: Mapped[dict | None] = mapped_column(JSON, nullable=True)  # {"meta", "items": [{"name", "weight", "grade"}]}
+    justified: Mapped[list | None] = mapped_column(JSON, nullable=True)  # fechas ISO de ausencias justificadas (Phoenix); cuentan como asistencia
     slots: Mapped[list["Slot"]] = relationship(cascade="all, delete-orphan", order_by="Slot.weekday")
     makeups: Mapped[list["Makeup"]] = relationship(cascade="all, delete-orphan", order_by="Makeup.date")
 

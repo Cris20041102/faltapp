@@ -248,6 +248,7 @@ def main():
             imp.get_by_role("button", name="Importar").click()
             imp.wait_for_url("**/#inicio")
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
+            expect(imp.locator("[data-course]").filter(has_text="Bases de Datos")).to_contain_text("✅ Justificadas: 2/09")
 
             # marcar en 1 toque desde Inicio (últimas clases), sirve igual en PC, Android y iPhone
             q = imp.locator("[data-quick]").first
