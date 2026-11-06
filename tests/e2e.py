@@ -401,6 +401,13 @@ def main():
             expect(imp.get_by_role("heading", name="Agenda")).to_be_visible()
             expect(imp.locator("li", has_text="2° Prueba Parcial")).to_contain_text("Prueba · Bases de Datos · de Phoenix")
             expect(imp.locator("li", has_text="2° Prueba Parcial").get_by_role("button")).to_have_count(0)
+            # la agenda en el calendario del celular: enlace .ics privado con las pruebas (también las de Phoenix)
+            imp.get_by_role("button", name="📅 En tu celular").click()
+            webcal = imp.locator("[data-cal-ios]").get_attribute("href")
+            assert webcal.startswith("webcal://127.0.0.1"), webcal
+            ics = httpx.get(webcal.replace("webcal:", "http:", 1)).text
+            assert "SUMMARY:Prueba · Bases de Datos · 2° Prueba Parcial" in ics.replace("\r\n ", ""), ics[:500]
+            imp.locator("#dlg [data-close]").click()
             # Inicio: las pruebas de los próximos 7 días con lo que necesita (20/10: la del 22/10 sí, Lab 2 del 12/11 no)
             sem = b.new_context(viewport={"width": 390, "height": 844})
             sem.clock.set_fixed_time("2026-10-20T12:00:00")

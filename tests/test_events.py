@@ -62,3 +62,24 @@ def test_evento_semestre_ajeno(client):
 def test_kind_invalido(client):
     h, s, _ = setup(client)
     assert add_event(client, h, s["id"], kind="fiesta").status_code == 422
+
+
+def test_calendario_del_celular(client):
+    """Enlace secreto .ics: sin sesión (las apps de calendario no la mandan), RFC 5545 y se puede cambiar."""
+    h, s, c = setup(client)
+    add_event(client, h, s["id"], course_id=c["id"], time="09:30")
+    add_event(client, h, s["id"], kind="entrega", date="2026-10-14", title="Informe; parte 1, final " + "x" * 60)
+    path = client.post("/api/me/calendar", headers=h).json()["path"]
+    assert client.post("/api/me/calendar", headers=h).json()["path"] == path  # el mismo enlace cada vez
+    r = client.get(path)
+    assert r.status_code == 200 and r.headers["content-type"].startswith("text/calendar")
+    raw = r.content.decode()
+    assert raw.startswith("BEGIN:VCALENDAR\r\n") and raw.endswith("END:VCALENDAR\r\n")
+    assert all(len(line.encode()) <= 75 for line in raw.split("\r\n"))
+    ics = raw.replace("\r\n ", "")  # deshace el plegado de líneas largas
+    assert "SUMMARY:Prueba · BD Lab · Certamen 2" in ics
+    assert "DTSTART:20261007T093000" in ics and "DTEND:20261007T103000" in ics
+    assert "DTSTART;VALUE=DATE:20261014" in ics and r"SUMMARY:Entrega · Informe\; parte 1\, final" in ics
+    nuevo = client.post("/api/me/calendar", headers=h, params={"renew": True}).json()["path"]
+    assert nuevo != path and client.get(path).status_code == 404 and client.get(nuevo).status_code == 200
+    assert client.get("/api/calendar/inventado.ics").status_code == 404

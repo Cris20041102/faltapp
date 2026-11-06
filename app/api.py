@@ -2,6 +2,7 @@ import datetime as dt
 import hmac
 import os
 import re
+import secrets
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
 from zoneinfo import ZoneInfo
@@ -848,6 +849,53 @@ def respond_proposal(id: int, body: RespondIn, user: User = Depends(current_user
 def prueba_warnings(db: Session, user: User, d: date) -> list[str]:
     q = select(Event.title).where(Event.user_id == user.id, Event.date == d, Event.kind == "prueba").order_by(Event.id)
     return [f"Tienes prueba ese día: {t}" for t in db.scalars(q)]
+
+
+# ---------- agenda en el calendario del celular (suscripción .ics) ----------
+@router.post("/me/calendar")
+def my_calendar(renew: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Enlace secreto para suscribir Google Calendar o el iPhone a la agenda. renew: enlace nuevo (el anterior deja de servir)."""
+    if renew or not user.calendar_token:
+        user.calendar_token = secrets.token_urlsafe(24)
+        db.commit()
+    return {"path": f"/api/calendar/{user.calendar_token}.ics"}
+
+
+KINDS = {"prueba": "Prueba", "entrega": "Entrega", "reunion": "Reunión", "otro": "Otro"}
+ics_text = lambda s: s.replace("\\", "\\\\").replace(";", "\\;").replace(",", "\\,").replace("\n", "\\n")
+
+
+def ics_fold(line: str) -> str:
+    """RFC 5545: líneas de máximo 75 bytes; las que siguen empiezan con un espacio."""
+    out, cur = [], ""
+    for ch in line:
+        if len((cur + ch).encode()) > (74 if out else 75):
+            out.append(cur)
+            cur = ""
+        cur += ch
+    return "\r\n ".join(out + [cur])
+
+
+@router.get("/calendar/{token}.ics")
+def calendar_ics(token: str, db: Session = Depends(get_db)):
+    """Público (las apps de calendario no mandan sesión): el token secreto es la llave."""
+    user = db.scalar(select(User).where(User.calendar_token == token))
+    if not user:
+        raise HTTPException(404, "No encontrado")
+    names = dict(db.execute(select(Course.id, Course.name).join(Semester).where(Semester.user_id == user.id)).all())
+    stamp = now().strftime("%Y%m%dT%H%M%SZ")
+    lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Faltapp//ES", "CALSCALE:GREGORIAN", "X-WR-CALNAME:Faltapp",
+             "REFRESH-INTERVAL;VALUE=DURATION:PT6H", "X-PUBLISHED-TTL:PT6H"]
+    for e in db.scalars(select(Event).where(Event.user_id == user.id).order_by(Event.date, Event.id)):
+        if e.time:  # hora sin zona: el calendario la toma en la hora local del celular (la del lugar donde estudia)
+            start = datetime.combine(e.date, e.time)
+            when = [f"DTSTART:{start:%Y%m%dT%H%M%S}", f"DTEND:{start + timedelta(hours=1):%Y%m%dT%H%M%S}"]
+        else:
+            when = [f"DTSTART;VALUE=DATE:{e.date:%Y%m%d}", f"DTEND;VALUE=DATE:{e.date + timedelta(days=1):%Y%m%d}"]
+        summary = " · ".join(x for x in (KINDS.get(e.kind, ""), names.get(e.course_id), e.title) if x)
+        lines += ["BEGIN:VEVENT", f"UID:evento-{e.id}@faltapp", f"DTSTAMP:{stamp}", *when, f"SUMMARY:{ics_text(summary)}", "END:VEVENT"]
+    lines.append("END:VCALENDAR")
+    return Response("".join(ics_fold(x) + "\r\n" for x in lines), media_type="text/calendar; charset=utf-8")
 
 
 def event_out(e: Event) -> dict:

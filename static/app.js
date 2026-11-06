@@ -967,6 +967,30 @@ async function refreshBadge() {
 }
 
 // ---------- agenda ----------
+// La agenda en el calendario del celular: se suscribe a un enlace .ics secreto y se actualiza sola cada pocas horas
+async function calendarDialog(renew = false) {
+  const { path } = await api("POST", `/me/calendar${renew ? "?renew=true" : ""}`);
+  const url = location.origin + path, webcal = url.replace(/^https?:/, "webcal:");
+  openDialog(`
+    <div class="p-5">
+      <div class="flex items-start justify-between gap-2">
+        <div><h2 class="h2">📅 Tu agenda en el celular</h2><p class="muted">Tus pruebas y entregas aparecen solas en el calendario del celular y se actualizan cada pocas horas.</p></div>
+        <button data-close class="btn h-9 w-9 shrink-0 !p-0" aria-label="Cerrar">&#10005;</button>
+      </div>
+      <div class="mt-4 grid gap-2">
+        <a data-cal-ios href="${esc(webcal)}" class="btn-primary">iPhone o Mac (Calendario)</a>
+        <a href="https://calendar.google.com/calendar/r?cid=${encodeURIComponent(webcal)}" target="_blank" rel="noopener" class="btn">Google Calendar (Android)</a>
+        <button data-cal-copy class="btn">Copiar enlace</button>
+      </div>
+      <p class="mt-3 text-xs text-slate-500">En Android, si se abre la app de Google Calendar y no lo agrega, ábrelo en el navegador. El enlace es privado: quien lo tenga ve tu agenda. <button data-cal-renew class="font-medium text-indigo-600 underline">Cambiar enlace</button></p>
+    </div>`, (d) => {
+    $("[data-cal-copy]", d).onclick = async () => {
+      try { await navigator.clipboard.writeText(url); toast("Enlace copiado ✓"); } catch { toast(url); }
+    };
+    $("[data-cal-renew]", d).onclick = async () => { await calendarDialog(true); toast("Enlace nuevo: el anterior dejó de funcionar. Vuelve a agregarlo en tu calendario"); };
+  });
+}
+
 async function agenda(v, arg) {
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
@@ -981,7 +1005,7 @@ async function agenda(v, arg) {
       ${e.auto ? "" : `<button data-del="${e.id}" class="btn h-8 w-8 !p-0" aria-label="Borrar ${esc(e.title)}">&#10005;</button>`}</li>`;
   const upcoming = events.filter((e) => e.date >= today()), past = events.filter((e) => e.date < today());
   v.innerHTML = `
-    <h1 class="h1">Agenda</h1>
+    <div class="flex items-end justify-between"><h1 class="h1">Agenda</h1><button data-cal class="text-sm font-medium text-indigo-600">📅 En tu celular</button></div>
     <section class="card mt-4">
       <form class="grid grid-cols-2 gap-3">
         <label class="field">Tipo<select class="input" name="kind">${Object.entries(KINDS).map(([k, n]) => `<option value="${k}">${n}</option>`).join("")}</select></label>
@@ -994,6 +1018,7 @@ async function agenda(v, arg) {
     </section>
     <section class="card mt-4"><h2 class="h2">Próximos</h2><ul class="divide-y divide-slate-100">${upcoming.map(item).join("") || `<li class="py-3 text-sm text-slate-400">Nada por ahora.</li>`}</ul></section>
     ${past.length ? `<details class="card mt-4"><summary class="cursor-pointer font-semibold">Pasados (${past.length})</summary><ul class="divide-y divide-slate-100 opacity-70">${past.reverse().map(item).join("")}</ul></details>` : ""}`;
+  $("[data-cal]", v).onclick = () => calendarDialog();
   $("form", v).onsubmit = async (e) => {
     e.preventDefault();
     const x = formData(e.target);
