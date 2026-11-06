@@ -3,6 +3,7 @@ import base64
 import json
 import urllib.parse
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -117,6 +118,10 @@ def main():
             page.get_by_label("Nombre").fill("Cristian")
             page.get_by_label("Contraseña").fill("secreto1")
             page.get_by_role("button", name="Crear cuenta").last.click()
+            # el código de recuperación se muestra una sola vez, antes de entrar
+            expect(page.locator("[data-recovery-code]")).to_have_text(re.compile(r"^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$"))
+            code = page.locator("[data-recovery-code]").inner_text()
+            page.get_by_role("button", name="Ya lo guardé").click()
 
             page.get_by_label("Calendario").select_option(label="Universidad de La Serena · 2º semestre 2026")
             expect(page.get_by_label("Inicio")).to_have_value("2026-08-10")
@@ -454,6 +459,19 @@ def main():
                     expect(page.get_by_text("SERVICE WAKING UP")).to_have_count(0)
             finally:
                 page.context.unroute(URL + "/", render)
+            # olvidó la contraseña: con usuario + código pone una nueva y recibe otro código
+            rc = b.new_context(viewport={"width": 390, "height": 844})
+            rp = rc.new_page()
+            rp.goto(URL)
+            rp.get_by_role("button", name="¿Olvidaste tu contraseña?").click()
+            rp.get_by_label("Usuario").fill("cristian")
+            rp.get_by_label("Código de recuperación").fill(code.lower())
+            rp.get_by_label("Contraseña nueva").fill("nueva123")
+            rp.get_by_role("button", name="Cambiar contraseña y entrar").click()
+            expect(rp.locator("[data-recovery-code]")).not_to_have_text(code)
+            rp.get_by_role("button", name="Ya lo guardé").click()
+            rp.wait_for_url("**/#inicio")
+            rc.close()
             assert not errors, errors
             sw_takeover(b)
             b.close()

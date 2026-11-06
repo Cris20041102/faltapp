@@ -5,6 +5,7 @@ import re
 import secrets
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
+from time import monotonic
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -51,7 +52,7 @@ USERNAME_DAYS, NAME_DAYS = 30, 14
 def me_out(u: User) -> dict:
     nxt = lambda at, days: (n := next_change(at, days)) and n.isoformat()
     return profile_out(u) | {"username_next_change": nxt(u.username_changed_at, USERNAME_DAYS),
-                             "display_name_next_change": nxt(u.display_name_changed_at, NAME_DAYS)}
+                             "display_name_next_change": nxt(u.display_name_changed_at, NAME_DAYS), "has_recovery": bool(u.recovery_hash)}
 
 
 def check_username(v: str) -> str:
@@ -88,22 +89,81 @@ class Register(Credentials):
         return v
 
 
+# Límite de intentos fallidos por usuario (contraseña o código de recuperación): frena a quien prueba claves al azar.
+# shortcut: vive en la memoria del proceso (se borra si Render reinicia o duerme); pasarlo a la BD si hay varias instancias
+FAILS: dict[str, list[float]] = {}
+FAIL_WINDOW, FAIL_MAX = 15 * 60, 5
+
+
+def check_attempts(key: str) -> None:
+    t = monotonic()
+    recent = FAILS[key] = [x for x in FAILS.get(key, []) if t - x < FAIL_WINDOW]
+    if len(recent) >= FAIL_MAX:
+        raise HTTPException(429, f"Demasiados intentos. Espera {int(FAIL_WINDOW - (t - recent[0])) // 60 + 1} min y vuelve a probar")
+
+
+def new_recovery(u: User) -> str:
+    """Código nuevo (el anterior deja de servir). Se muestra una sola vez: solo se guarda su hash."""
+    code = "-".join("".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(4)) for _ in range(3))
+    u.recovery_hash = hash_password(code.replace("-", ""))
+    return code
+
+
 @router.post("/auth/register")
 def register(body: Register, db: Session = Depends(get_db)):
     if db.scalar(select(User).where(User.username == body.username)):
         raise HTTPException(409, "Ese usuario ya existe")
     u = User(username=body.username, display_name=body.display_name.strip(), password_hash=hash_password(body.password))
+    code = new_recovery(u)
     db.add(u)
     db.commit()
-    return {"token": make_token(u.id)}
+    return {"token": make_token(u.id), "recovery_code": code}
 
 
 @router.post("/auth/login")
 def login(body: Credentials, db: Session = Depends(get_db)):
+    check_attempts(f"login:{body.username}")
     u = db.scalar(select(User).where(User.username == body.username))
     if not u or not verify_password(body.password, u.password_hash):
+        FAILS[f"login:{body.username}"].append(monotonic())
         raise HTTPException(401, "Usuario o contraseña incorrectos")
+    FAILS.pop(f"login:{body.username}", None)
     return {"token": make_token(u.id)}
+
+
+class Recover(BaseModel):
+    username: str
+    code: str = Field(max_length=40)
+    password: str = Field(min_length=6, max_length=100)
+
+    @field_validator("username")
+    @classmethod
+    def _norm(cls, v: str) -> str:
+        return v.strip().lower()
+
+
+@router.post("/auth/recover")
+def recover(body: Recover, db: Session = Depends(get_db)):
+    """Usuario + código de recuperación → contraseña nueva. Entrega un código nuevo: el usado ya no sirve."""
+    check_attempts(f"recover:{body.username}")
+    u = db.scalar(select(User).where(User.username == body.username))
+    code = re.sub(r"[^A-Z0-9]", "", body.code.upper())
+    if not u or not u.recovery_hash or not verify_password(code, u.recovery_hash):
+        FAILS[f"recover:{body.username}"].append(monotonic())
+        raise HTTPException(401, "Usuario o código incorrectos")
+    u.password_hash = hash_password(body.password)
+    new = new_recovery(u)
+    db.commit()
+    FAILS.pop(f"login:{body.username}", None)
+    return {"token": make_token(u.id), "recovery_code": new}
+
+
+@router.post("/me/recovery")
+def my_recovery(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Genera (o cambia) el código de recuperación de la cuenta."""
+    code = new_recovery(user)
+    db.commit()
+    return {"recovery_code": code}
 
 
 @router.get("/me")

@@ -3,6 +3,8 @@ import sys
 
 from sqlalchemy import create_engine, inspect
 
+from tests.conftest import register
+
 
 def test_registro_login_me(client):
     r = client.post("/api/auth/register", json={"username": "Cristian", "password": "secreto1", "display_name": "Cris"})
@@ -56,3 +58,36 @@ def test_errores_de_registro_en_espanol(client):
     assert "usuario" in r.json()["detail"][0]["msg"]
     r = client.post("/api/auth/register", json={"username": "ana", "password": "123", "display_name": "A"})
     assert "contraseña" in r.json()["detail"][0]["msg"]
+
+
+def test_limite_de_intentos(client):
+    register(client, "ana", "secreto1")
+    malo = lambda: client.post("/api/auth/login", json={"username": "ana", "password": "otra-cosa"}).status_code
+    assert [malo() for _ in range(5)] == [401] * 5
+    r = client.post("/api/auth/login", json={"username": "ana", "password": "secreto1"})
+    assert r.status_code == 429 and "Espera 15 min" in r.json()["detail"]  # ni con la buena: hay que esperar
+    assert client.post("/api/auth/login", json={"username": "beto", "password": "x" * 6}).status_code == 401  # otros usuarios siguen igual
+
+
+def test_recuperar_con_codigo(client):
+    r = client.post("/api/auth/register", json={"username": "ana", "password": "secreto1", "display_name": "Ana"}).json()
+    code = r["recovery_code"]
+    assert len(code) == 14 and code.count("-") == 2
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {r['token']}"}).json()["has_recovery"] is True
+    mal = client.post("/api/auth/recover", json={"username": "ana", "code": "AAAA-BBBB-CCCC", "password": "nueva123"})
+    assert mal.status_code == 401
+    ok = client.post("/api/auth/recover", json={"username": " Ana ", "code": code.lower().replace("-", " "), "password": "nueva123"})
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["recovery_code"] != code  # el usado ya no sirve
+    assert client.post("/api/auth/recover", json={"username": "ana", "code": code, "password": "otra1234"}).status_code == 401
+    assert client.post("/api/auth/login", json={"username": "ana", "password": "nueva123"}).status_code == 200
+    assert client.post("/api/auth/login", json={"username": "ana", "password": "secreto1"}).status_code == 401
+
+
+def test_codigo_para_cuentas_existentes(client):
+    h = register(client)
+    nuevo = client.post("/api/me/recovery", headers=h).json()["recovery_code"]
+    otro = client.post("/api/me/recovery", headers=h).json()["recovery_code"]
+    assert nuevo != otro
+    assert client.post("/api/auth/recover", json={"username": "cristian", "code": nuevo, "password": "nueva123"}).status_code == 401
+    assert client.post("/api/auth/recover", json={"username": "cristian", "code": otro, "password": "nueva123"}).status_code == 200

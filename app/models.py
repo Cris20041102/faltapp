@@ -35,6 +35,7 @@ class User(Base):
     display_name_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # última importación del portal (recordatorio)
     calendar_token: Mapped[str | None] = mapped_column(String(64), unique=True, nullable=True)  # llave del enlace .ics de su agenda
+    recovery_hash: Mapped[str | None] = mapped_column(String(200), nullable=True)  # código para poner otra contraseña si la olvida
 
 
 class Friendship(Base):

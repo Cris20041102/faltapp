@@ -157,9 +157,30 @@ function calendar(el, key, colors, range, onPick, marks = new Set()) {
 const legend = (keys = ["verde", "amarillo", "rojo", "falta", "asistio"], withTests = false) =>
   `<div class="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-500">${withTests ? `<span class="flex items-center gap-1.5"><span class="h-2 w-2 rounded-full bg-red-600"></span>Prueba</span>` : ""}${keys.map((k) => `<span class="flex items-center gap-1.5"><span class="h-3 w-3 rounded ${COLOR[k].dot}"></span>${COLOR[k].label}</span>`).join("")}</div>`;
 
+// ---------- código de recuperación ----------
+// Se muestra una sola vez (el servidor guarda solo su hash): con el usuario y este código se pone una contraseña nueva
+function showRecovery(code, then) {
+  openDialog(`
+    <div class="p-5">
+      <h2 class="h2">🔑 Tu código de recuperación</h2>
+      <p class="muted">Si olvidas tu contraseña, con tu usuario y este código pones una nueva. Guárdalo (una captura o en tus notas): no lo vas a volver a ver.</p>
+      <p data-recovery-code class="mt-4 rounded-xl bg-indigo-50 p-3 text-center font-mono text-xl font-bold text-indigo-900">${esc(code)}</p>
+      <div class="mt-4 grid grid-cols-2 gap-2"><button data-copy-code class="btn">Copiar</button><button data-close class="btn-primary">Ya lo guardé</button></div>
+    </div>`, (d) => {
+    $("[data-copy-code]", d).onclick = async () => { try { await navigator.clipboard.writeText(code); toast("Código copiado ✓"); } catch { toast(code); } };
+    if (then) d.addEventListener("close", then, { once: true });
+  });
+}
+async function newRecovery() {
+  const { recovery_code } = await api("POST", "/me/recovery");
+  ME = { ...ME, has_recovery: true };
+  showRecovery(recovery_code, render);
+}
+
 // ---------- login ----------
 let loginMode = "login";
 function login(v) {
+  if (loginMode === "recover") return recoverForm(v);
   const reg = loginMode === "register";
   v.innerHTML = `
     <div class="mx-auto max-w-sm pt-6">
@@ -175,14 +196,47 @@ function login(v) {
         <label class="field">Contraseña<input class="input" name="password" type="password" autocomplete="${reg ? "new-password" : "current-password"}" required minlength="6"></label>
         <button class="btn-primary w-full py-3">${reg ? "Crear cuenta" : "Entrar"}</button>
       </form>
+      ${reg ? "" : `<button data-forgot class="mt-3 w-full text-center text-sm font-medium text-indigo-600">¿Olvidaste tu contraseña?</button>`}
     </div>`;
   $$("[data-mode]", v).forEach((b) => (b.onclick = () => { loginMode = b.dataset.mode; login(v); }));
+  const forgot = $("[data-forgot]", v);
+  if (forgot) forgot.onclick = () => { loginMode = "recover"; login(v); };
   $("form", v).onsubmit = async (e) => {
     e.preventDefault();
-    const { token: t } = await api("POST", reg ? "/auth/register" : "/auth/login", formData(e.target));
-    token = t; store.set("token", t);
-    clearSaved();
-    location.hash = "#inicio";
+    const { token: t, recovery_code } = await api("POST", reg ? "/auth/register" : "/auth/login", formData(e.target));
+    enter(t, recovery_code);
+  };
+}
+
+// con código nuevo (al crear la cuenta o al recuperarla) se muestra antes de entrar
+function enter(t, code) {
+  token = t; store.set("token", t);
+  clearSaved();
+  if (code) showRecovery(code, () => (location.hash = "#inicio"));
+  else location.hash = "#inicio";
+}
+
+function recoverForm(v) {
+  v.innerHTML = `
+    <div class="mx-auto max-w-sm pt-6">
+      <h1 class="h1 text-center">Recuperar tu cuenta</h1>
+      <p class="muted mt-1 text-center">Con tu usuario y el código de recuperación que guardaste al crear la cuenta.</p>
+      <form class="card mt-4 space-y-3">
+        <label class="field">Usuario<input class="input" name="username" autocomplete="username" required autocapitalize="none"></label>
+        <label class="field">Código de recuperación<input class="input font-mono" name="code" required autocapitalize="characters" autocomplete="off" placeholder="XXXX-XXXX-XXXX"></label>
+        <label class="field">Contraseña nueva<input class="input" name="password" type="password" autocomplete="new-password" required minlength="6"></label>
+        <button class="btn-primary w-full py-3">Cambiar contraseña y entrar</button>
+      </form>
+      <button data-back class="mt-3 w-full text-center text-sm font-medium text-indigo-600">Volver a entrar</button>
+      <p class="mt-4 text-center text-xs text-slate-500">¿No tienes el código? Pídele a quien administra Faltapp que te ayude.</p>
+    </div>`;
+  $("[data-back]", v).onclick = () => { loginMode = "login"; login(v); };
+  $("form", v).onsubmit = async (e) => {
+    e.preventDefault();
+    const { token: t, recovery_code } = await api("POST", "/auth/recover", formData(e.target));
+    loginMode = "login";
+    toast("Contraseña cambiada ✓");
+    enter(t, recovery_code);
   };
 }
 
@@ -366,6 +420,7 @@ async function inicio(v) {
   const [s, pstate] = await Promise.all([api("GET", `/semesters/${sem.id}/summary?today=${today()}`), pushState()]);
   const pushBanner = ["off", "ios"].includes(pstate) && !store.get("push-banner-off");
   const careerBanner = !ME.career && !store.get("career-banner-off");
+  const recoveryBanner = !ME.has_recovery && !store.get("recovery-banner-off");
   const wd = Object.entries(s.weekdays);
   // las 2 últimas jornadas con clases (hasta hoy): marcar una falta es 1 toque, sin buscar en el calendario
   const recent = Object.keys(s.calendar).filter((d) => d <= today() && s.calendar[d] !== "gris").sort().slice(-2).reverse();
@@ -414,6 +469,14 @@ async function inicio(v) {
           <p class="text-sm">Te avisamos de pruebas, de cuando te quedan pocas faltas y de tus amigos.</p>
           ${pstate === "ios" ? `<a href="#perfil" class="btn mt-2">Cómo activarlas en iPhone</a>` : `<button data-push-on class="btn-primary mt-2">Activar</button>`}</div>
         <button data-push-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso">&#10005;</button>
+      </section>` : ""}
+    ${recoveryBanner ? `
+      <section data-recovery-banner class="mt-4 flex items-start gap-3 rounded-2xl bg-amber-50 p-4 text-amber-900">
+        <span class="text-2xl" aria-hidden="true">🔑</span>
+        <div class="flex-1"><p class="font-semibold">Crea tu código de recuperación</p>
+          <p class="text-sm">Si olvidas tu contraseña, con él recuperas tu cuenta.</p>
+          <button data-recovery class="btn-primary mt-2">Crear código</button></div>
+        <button data-recovery-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso del código">&#10005;</button>
       </section>` : ""}
     ${careerBanner ? `
       <section data-career-banner class="mt-4 flex items-start gap-3 rounded-2xl bg-indigo-50 p-4 text-indigo-900">
@@ -478,6 +541,10 @@ async function inicio(v) {
   bindPush(v);
   const dismiss = $("[data-push-dismiss]", v);
   if (dismiss) dismiss.onclick = () => { store.set("push-banner-off", "1"); render(); };
+  const recoveryOff = $("[data-recovery-dismiss]", v);
+  if (recoveryOff) recoveryOff.onclick = () => { store.set("recovery-banner-off", "1"); render(); };
+  const recoveryBtn = $("[data-recovery]", v);
+  if (recoveryBtn) recoveryBtn.onclick = newRecovery;
   const careerOff = $("[data-career-dismiss]", v);
   if (careerOff) careerOff.onclick = () => { store.set("career-banner-off", "1"); render(); };
   $$("[data-quick]", v).forEach((b) => (b.onclick = async () => {
@@ -837,6 +904,9 @@ async function perfil(v) {
       <button class="btn-primary col-span-2">Guardar perfil</button>
     </form>
     <section class="card mt-4"><h2 class="h2">🔔 Notificaciones</h2><div class="mt-2">${PUSH_CARD[pstate]}</div></section>
+    <section class="card mt-4"><h2 class="h2">🔑 Código de recuperación</h2>
+      <p class="muted">${ME.has_recovery ? "Ya tienes uno. Si lo perdiste, crea otro: el anterior deja de servir." : "Si olvidas tu contraseña, con este código recuperas tu cuenta. Aún no tienes uno."}</p>
+      <button data-recovery class="${ME.has_recovery ? "btn" : "btn-primary"} mt-2">${ME.has_recovery ? "Crear uno nuevo" : "Crear código"}</button></section>
     ${themeCard()}
     <a href="#semestre" class="btn mt-4 w-full">Semestre, fechas y feriados</a>
     <button data-logout class="mt-6 w-full text-center text-sm text-slate-500">Cerrar sesión</button>`;
@@ -857,6 +927,7 @@ async function perfil(v) {
   const del = $("[data-noavatar]", v);
   if (del) del.onclick = async () => { await api("DELETE", "/me/avatar"); ME = await api("GET", "/me"); render(); };
   $("[data-logout]", v).onclick = logout;
+  $("[data-recovery]", v).onclick = newRecovery;
   bindPush(v);
   bindTheme(v);
 }
