@@ -394,6 +394,13 @@ async function inicio(v) {
       </section>`;
   };
   const topes = clashes(s.courses).filter(([a]) => ahead(a).length).sort(([a], [b]) => a.weekday - b.weekday || a.start_time.localeCompare(b.start_time));
+  // pruebas de los próximos 7 días con lo que necesita en ese ramo (las notas están en el ramo ancla de la asignatura)
+  const tomorrow = iso(new Date(parse(today()).getTime() + 864e5)), week = iso(new Date(parse(today()).getTime() + 7 * 864e5));
+  const gs = asignaturas(s.courses);
+  const pruebas = s.events.filter((e) => e.kind === "prueba" && e.date >= today() && e.date <= week)
+    .sort((a, b) => (a.date + (a.time || "")).localeCompare(b.date + (b.time || "")))
+    .map((e) => { const g = gs.find((g) => g.courses.some((c) => c.id === e.course_id)); return { e, g, r: g && gradeCalc(g.anchor.grades) }; });
+  const needText = (r) => !r || r.final != null ? "" : r.need > 7 ? "No alcanza ni con 7,0" : r.need <= 1 ? `Ya tienes el ${nota(r.meta)} asegurado` : `Necesitas ${nota(r.need)} en lo que queda`;
   v.innerHTML = `
     <div class="flex items-end justify-between">
       <div><p class="muted">Semestre</p><h1 class="h1">${esc(sem.name)}</h1></div>
@@ -408,6 +415,13 @@ async function inicio(v) {
         <button data-push-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso">&#10005;</button>
       </section>` : ""}
     ${topes.map(tope).join("")}
+    ${pruebas.length ? `
+      <section data-pruebas class="card mt-4">
+        <div class="flex items-baseline justify-between"><h2 class="h2">📝 Pruebas esta semana</h2><a href="#agenda" class="text-sm font-medium text-indigo-600">Agenda</a></div>
+        <ul class="mt-2 space-y-2 text-sm">${pruebas.map(({ e, g, r }) => `
+          <li><span class="font-medium">${e.date === today() ? "Hoy" : e.date === tomorrow ? "Mañana" : longDate(e.date)}${e.time ? ` ${e.time}` : ""}</span> · ${esc(e.title)}${g ? ` <span class="text-slate-500">· ${esc(g.name)}</span>` : ""}
+            ${needText(r) ? `<span class="block text-xs font-medium ${riskOf(r) === "red" ? "text-red-600" : riskOf(r) === "yellow" ? "text-yellow-600" : "text-green-600"}">${needText(r)}</span>` : ""}</li>`).join("")}</ul>
+      </section>` : ""}
     ${s.days.total ? `
       <section data-progress class="card mt-4">
         <h2 class="h2">Llevas ${s.days.done} de ${s.days.total} días de clases</h2>

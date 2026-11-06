@@ -401,6 +401,17 @@ def main():
             expect(imp.get_by_role("heading", name="Agenda")).to_be_visible()
             expect(imp.locator("li", has_text="2° Prueba Parcial")).to_contain_text("Prueba · Bases de Datos · de Phoenix")
             expect(imp.locator("li", has_text="2° Prueba Parcial").get_by_role("button")).to_have_count(0)
+            # Inicio: las pruebas de los próximos 7 días con lo que necesita (20/10: la del 22/10 sí, Lab 2 del 12/11 no)
+            sem = b.new_context(viewport={"width": 390, "height": 844})
+            sem.clock.set_fixed_time("2026-10-20T12:00:00")
+            sp = sem.new_page()
+            sp.goto(URL)
+            sp.evaluate("t => localStorage.setItem('token', t)", imp.evaluate("localStorage.getItem('token')"))
+            sp.goto(URL + "/?r=1#inicio")
+            expect(sp.locator("[data-pruebas]")).to_contain_text("Jueves 22 de octubre · 2° Prueba Parcial · Bases de Datos")
+            expect(sp.locator("[data-pruebas]")).to_contain_text("Necesitas 3,1 en lo que queda")
+            expect(sp.locator("[data-pruebas]")).not_to_contain_text("Lab 2")
+            sem.close()
             imp.close()
 
             # servidor dormido (como Render tras 15 min sin uso): la app abre igual con lo guardado y avisa que está despertando
