@@ -656,6 +656,7 @@ def import_absences(body: ImportIn, user: User = Depends(current_user), db: Sess
                     removed += 1
     for c, ds in justified.items():
         c.justified = sorted(ds)
+    user.imported_at = now()
     db.commit()
     alertar_faltas(db, user, antes)
     return {"added": added, "removed": removed, "skipped": skipped, "makeups": makeups}
@@ -998,4 +999,10 @@ def cron_daily(key: str = "", today: date | None = None, db: Session = Depends(g
             title = ("🎉 Ya puedes faltar a todo lo que queda del semestre" if all(c["faltar_todo"] for c in res["courses"])
                      else f"🎉 Ya puedes faltar a todo lo que queda en {', '.join(c['name'] for c in nuevos)}")
             push.notify(db, [uid], title, "Por asistencia ya cumples. Ojo con las pruebas.", "/#inicio")
+        if (u := db.get(User, uid)).imported_at:  # solo a quien importa: si pasa una semana o más sin hacerlo, un aviso por semana
+            t = u.imported_at if u.imported_at.tzinfo else u.imported_at.replace(tzinfo=timezone.utc)
+            last = t.astimezone(ZoneInfo("America/Santiago")).date()
+            if (dias := (today - last).days) >= 7:
+                push.notify(db, [uid], "📥 ¿Actualizamos tus faltas?", f"Hace {dias} días que no importas desde tu universidad: tus faltas y notas pueden estar desactualizadas.",
+                            "/#importar", key=f"importar:{last}:{dias // 7}")
     return {"ok": True}

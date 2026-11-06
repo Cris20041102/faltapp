@@ -33,6 +33,7 @@ class User(Base):
     avatar_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     username_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     display_name_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    imported_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)  # última importación del portal (recordatorio)
 
 
 class Friendship(Base):

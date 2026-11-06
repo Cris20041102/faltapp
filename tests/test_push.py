@@ -158,3 +158,29 @@ def test_cron_diario_con_tope(client, sent, monkeypatch):
     client.get("/api/cron/daily", params={"key": "s3cr3t", "today": "2026-09-30"})
     p = next(p for _, p in sent if "¿Faltaste" in p["title"])
     assert "Inv. de Oper. I" in p["body"] and "BD Lab" not in p["body"]
+
+
+def test_recordatorio_importar(client, sent, monkeypatch):
+    """A quien importa desde su universidad: si pasa una semana sin hacerlo, un aviso por semana; al importar se reinicia."""
+    from datetime import datetime, timezone
+    monkeypatch.setenv("CRON_SECRET", "s3cr3t")
+    h = register(client)
+    subscribe(client, h, "cel")
+    c = new_course(client, h, new_semester(client, h)["id"])
+    run = lambda d: client.get("/api/cron/daily", params={"key": "s3cr3t", "today": d})
+    avisos = lambda: [p["body"][:18] for _, p in sent if "importas" in p["body"]]
+    importar = lambda dia: (monkeypatch.setattr("app.api.now", lambda: datetime(2026, 10, dia, 15, tzinfo=timezone.utc)),
+                            client.post("/api/absences/import", headers=h, json={"items": [{"course_id": c["id"], "present": ["2026-09-30"]}]}))
+    run("2026-10-20")
+    assert avisos() == []  # nunca ha importado: no se le recuerda
+    importar(1)
+    run("2026-10-07")  # 6 días
+    assert avisos() == []
+    run("2026-10-08")
+    run("2026-10-09")  # el mismo aviso no se repite en la semana
+    assert avisos() == ["Hace 7 días que no"]
+    run("2026-10-15")
+    assert avisos() == ["Hace 7 días que no", "Hace 14 días que n"]
+    importar(16)
+    run("2026-10-20")  # recién importó: nada
+    assert len(avisos()) == 2
