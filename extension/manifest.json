@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "Faltapp: importar de Phoenix",
+  "version": "1.0.0",
+  "description": "Cada vez que entras a Phoenix (ULS), trae tus faltas y notas a Faltapp sin tocar nada.",
+  "icons": { "128": "icon.png" },
+  "action": { "default_title": "Abrir Faltapp", "default_icon": "icon.png" },
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [{ "matches": ["https://phoenix.cic.userena.cl/*"], "js": ["content.js"], "run_at": "document_idle" }],
+  "permissions": ["storage"],
+  "host_permissions": ["https://faltapp.appscristianrojo.cl/*"]
+}

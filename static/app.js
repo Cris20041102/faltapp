@@ -1182,6 +1182,7 @@ async function importar(v, arg) {
     location.hash = items.length ? "#inicio" : "#notas";
   };
   if (rows.every(known) && rows.some((x) => map[x.key])) return run((x) => map[x.key]);
+  document.title = "Elige tus ramos · Faltapp"; // la extensión de Chrome ve que hay que elegir y muestra la pestaña
 
   const li = (x, i, title, sub) => `
       <li class="py-3">
@@ -1321,6 +1322,7 @@ async function render() {
   $("#nav").classList.toggle("hidden", route === "login");
   $$("#nav [data-route]").forEach((a) => a.classList.toggle("text-indigo-600", a.dataset.route === route));
   const v = $("#view"), changed = route !== shown;
+  document.title = "Faltapp";
   if (changed && shown) v.classList.add("leaving"); // la pantalla anterior se desenfoca mientras carga la nueva
   try {
     if (token && !ME) ME = await api("GET", "/me");
