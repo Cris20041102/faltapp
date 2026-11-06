@@ -980,7 +980,7 @@ const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informa
 
 // Corre DENTRO de Phoenix como marcador: desde cualquier página de Phoenix (con sesión iniciada) trae el Registro de
 // Asistencia y las Notas Parciales y abre Faltapp con los datos en el # (no viajan al servidor hasta importar).
-// Asistencia: fecha + ✔/✖ por ramo y sección. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial<br>33.3%")
+// Asistencia: fecha + ✔/✖ por ramo y sección; la ausencia justificada (ícono "−") cuenta como asistencia. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial<br>33.3%")
 // con su nota (0.0 = sin nota) y el peso de teoría/lab ("Promedio Teoría<br>60%"). Phoenix responde en latin-1.
 // Sin comentarios // adentro: va en una URL.
 async function phoenixGrab(origin) {
@@ -1002,7 +1002,7 @@ async function phoenixGrab(origin) {
       else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
       else if (/^\[[TL]-\d+\]$/.test(first)) {
         const pick = (sel) => dates.filter((d, i) => /^\d{4}-/.test(d) && tds[i]?.querySelector(sel));
-        asistencia.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check") });
+        asistencia.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check,.fa-minus") });
       }
     }
     name = "";
@@ -1024,7 +1024,7 @@ async function phoenixGrab(origin) {
   } catch (e) { console.warn(e); }
   msg.remove();
   if (!asistencia.length && !notas.length) return alert("No encontré tus faltas ni tus notas. Entra a Phoenix con tu cuenta y vuelve a tocar el marcador.");
-  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ asistencia, notas }));
+  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ asistencia, notas, v: 2 }));
 }
 
 // "Progr. Avanzada" ≈ "Programación Avanzada": proporción de palabras donde una es el inicio de la otra
@@ -1123,6 +1123,7 @@ async function importar(v, arg) {
   const asis = (d?.asistencia || []).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present));
   const ph = Object.values((d?.notas || []).filter((r) => Array.isArray(r.evals)).reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
   if (!asis.length && !ph.length) return importHelp(v);
+  if (asis.length && !d.v) toast("Tu marcador de Phoenix es antiguo y no cuenta las ausencias justificadas: bórralo y vuelve a guardarlo desde Importar", true);
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
   const { courses } = await api("GET", `/semesters/${sem.id}`);

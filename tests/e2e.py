@@ -178,10 +178,13 @@ def main():
             card = page.locator("[data-course]").filter(has_text="Bases de Datos")
             expect(card.locator("[data-quedan]")).to_have_text("4")
             day = page.locator('[data-date="2026-10-07"]')
-            for _ in range(12):  # navegar hasta octubre, venga de donde venga "hoy"
-                if day.count():
-                    break
-                page.locator("[data-month-next]" if page.locator("[data-date]").first.get_attribute("data-date") < "2026-10" else "[data-month-prev]").click()
+
+            def show_day():  # navegar hasta octubre, venga de donde venga "hoy"
+                for _ in range(12):
+                    if day.count():
+                        return
+                    page.locator("[data-month-next]" if page.locator("[data-date]").first.get_attribute("data-date") < "2026-10" else "[data-month-prev]").click()
+            show_day()
             day.click()
             page.get_by_role("button", name="Faltar todo el día").click()
             expect(card.locator("[data-quedan]")).to_have_text("3")
@@ -241,6 +244,7 @@ def main():
             expect(imp.get_by_label("Bases de Datos I [L-1]").locator("option:checked")).to_have_text("Bases de Datos (Lab)")
             expect(imp.get_by_label("Bases de Datos I [T-1]").locator("option:checked")).to_have_text("No importar")
             expect(imp.get_by_label("Ciberseguridad Avanzada [L-1]").locator("option:checked")).to_have_text("No importar")
+            expect(imp.get_by_text("3 asistencias")).to_be_visible()  # la ausencia justificada (−) cuenta como asistencia
             imp.get_by_role("button", name="Importar").click()
             imp.wait_for_url("**/#inicio")
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
@@ -305,6 +309,7 @@ def main():
 
             # un diálogo abierto no debe quedar encima al cambiar de pantalla (ej: botón atrás)
             page.goto(URL + "/#inicio")
+            show_day()
             day.click()
             page.evaluate("location.hash = '#agenda'")
             expect(page.locator("#dlg")).not_to_have_attribute("open", "")
