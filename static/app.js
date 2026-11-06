@@ -981,54 +981,70 @@ async function agenda(v, arg) {
 // ---------- importar desde Phoenix (ULS) ----------
 const PHOENIX = "https://phoenix.cic.userena.cl/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php";
 
-// Corre DENTRO de Phoenix como marcador: desde cualquier página de Phoenix (con sesión iniciada) trae el Registro de
-// Asistencia y las Notas Parciales y abre Faltapp con los datos en el # (no viajan al servidor hasta importar).
-// Asistencia: fecha + ✔/✖ por ramo y sección; la ausencia justificada (ícono "−") cuenta como asistencia y se muestra aparte. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial<br>33.3%")
-// con su nota (0.0 = sin nota) y el peso de teoría/lab ("Promedio Teoría<br>60%"). Phoenix responde en latin-1.
+const PHOENIX_PAGES = { asistencia: "/modulos/bitacora/alumnos/informacion/fx_informacion_asistencia.php", notas: "/modulos/bitacora/alumnos/informacion/fx_informacion_nota.php" };
+
+// Corre DENTRO del portal (Phoenix) como marcador, con la sesión iniciada. Solo COPIA las páginas: por cada fila de tabla,
+// sus clases y por celda [texto (<br> = salto de línea), clases de la celda y sus íconos, colspan, 1 si trae otra tabla].
+// Abre Faltapp con eso en el # (no viaja al servidor hasta importar). La lectura la hace Faltapp (READERS): los arreglos
+// llegan sin renovar el marcador. Respeta el charset de la página (Phoenix responde en latin-1).
 // Sin comentarios // adentro: va en una URL.
-async function phoenixGrab(origin) {
+async function grabPages(origin, pages) {
   const msg = document.createElement("div");
   msg.textContent = "Trayendo tus faltas y notas…";
   msg.style.cssText = "position:fixed;z-index:2147483647;top:16px;left:50%;transform:translateX(-50%);padding:10px 18px;border-radius:999px;background:#713dff;color:#fff;font:600 15px/1.3 system-ui,sans-serif;box-shadow:0 4px 20px #0004";
   document.body.append(msg);
-  const get = async (page) => {
-    const r = await fetch("/modulos/bitacora/alumnos/informacion/" + page);
+  const snap = async (url) => {
+    const r = await fetch(url);
     const doc = new DOMParser().parseFromString(new TextDecoder(/charset=([\w-]+)/i.exec(r.headers.get("content-type"))?.[1] || "utf-8").decode(await r.arrayBuffer()), "text/html");
     doc.querySelectorAll("br").forEach((b) => b.replaceWith("\n"));
-    return [...doc.querySelectorAll("tr")].map((tr) => [tr, [...tr.children], tr.children[0]?.textContent.trim() || ""]);
+    return [...doc.querySelectorAll("tr")].map((tr) => [tr.className, [...tr.children].map((td) => td.querySelector("table") ? ["", "", td.colSpan, 1]
+      : [td.textContent.trim(), [td, ...td.querySelectorAll("[class]")].map((e) => e.className).join(" ").trim(), td.colSpan, 0])]);
   };
-  const asistencia = [], notas = [];
-  try {
-    let name = "", dates = [], head = [];
-    for (const [tr, tds, first] of await get("fx_informacion_asistencia.php")) {
-      if (tr.classList.contains("bg-primary")) name = first;
-      else if (tr.classList.contains("bg-secondary")) dates = tds.map((td) => td.textContent.trim().replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
-      else if (/^\[[TL]-\d+\]$/.test(first)) {
-        const pick = (sel) => dates.filter((d, i) => /^\d{4}-/.test(d) && tds[i]?.querySelector(sel));
-        asistencia.push({ name, section: first, absent: pick(".fa-close,.fa-times"), present: pick(".fa-check,.fa-minus"), justified: pick(".fa-minus") });
-      }
-    }
-    name = "";
-    for (const [, tds, first] of await get("fx_informacion_nota.php")) {
-      if (tds.length === 1 && tds[0].colSpan > 1 && !tds[0].querySelector("table")) name = first;
-      else if (first === "Cordinación") head = tds.map((td) => td.textContent.trim());
-      else if (/^\[[TL]-\d+\]$/.test(first)) {
-        const evals = [], shares = {};
-        head.forEach((h, i) => {
-          const e = h.match(/^(\d\d)-(\d\d)-(\d{4})\s+([^\n]*?)\s*(?:\n\s*([\d.,]+)\s*%)?\s*$/);
-          const s = h.match(/^Promedio (Teor|Lab)\D*?([\d.,]+)\s*%$/);
-          const g = parseFloat((tds[i]?.textContent || "").replace(",", "."));
-          if (e) evals.push({ date: `${e[3]}-${e[2]}-${e[1]}`, name: e[4], weight: parseFloat((e[5] || "0").replace(",", ".")), grade: g >= 1 ? g : null });
-          if (s) shares[s[1][0]] = parseFloat(s[2].replace(",", "."));
-        });
-        notas.push({ name, section: first, evals, shares });
-      }
-    }
-  } catch (e) { console.warn(e); }
+  const got = {};
+  for (const [k, url] of Object.entries(pages)) got[k] = await snap(url).catch(() => []);
   msg.remove();
-  if (!asistencia.length && !notas.length) return alert("No encontré tus faltas ni tus notas. Entra a Phoenix con tu cuenta y vuelve a tocar el marcador.");
-  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ asistencia, notas, v: 3 }));
+  if (!Object.values(got).some((rows) => rows.length)) return alert("No encontré tus datos. Inicia sesión y vuelve a tocar el marcador.");
+  location.href = origin + "/#importar/" + encodeURIComponent(JSON.stringify({ portal: location.host, pages: got, v: 4 }));
 }
+
+// Lectores por portal: pasan lo que copió el marcador a { asistencia, notas }.
+const hasClass = (cell, ...cls) => cls.some((c) => (cell?.[1] || "").split(/\s+/).includes(c));
+
+// Phoenix (ULS). Asistencia: fecha + ✔/✖ por ramo y sección; la ausencia justificada ("−") cuenta como asistencia y se
+// muestra aparte. Notas: por sección, cada evaluación ("22-09-2026 1° Prueba Parcial\n33.3%") con su nota (0.0 = sin
+// nota) y el peso de teoría/lab ("Promedio Teoría\n60%").
+function readPhoenix({ asistencia: rowsA = [], notas: rowsN = [] }) {
+  const asistencia = [], notas = [];
+  let name = "", dates = [], head = [];
+  for (const [cls, cells] of rowsA) {
+    const first = cells[0]?.[0] || "", tr = cls.split(/\s+/);
+    if (tr.includes("bg-primary")) name = first;
+    else if (tr.includes("bg-secondary")) dates = cells.map((c) => c[0].replace(/^(\d\d)-(\d\d)-(\d{4})[\s\S]*/, "$3-$2-$1"));
+    else if (/^\[[TL]-\d+\]$/.test(first)) {
+      const pick = (...icons) => dates.filter((d, i) => /^\d{4}-/.test(d) && hasClass(cells[i], ...icons));
+      asistencia.push({ name, section: first, absent: pick("fa-close", "fa-times"), present: pick("fa-check", "fa-minus"), justified: pick("fa-minus") });
+    }
+  }
+  name = "";
+  for (const [, cells] of rowsN) {
+    const first = cells[0]?.[0] || "";
+    if (cells.length === 1 && cells[0][2] > 1 && !cells[0][3]) name = first;
+    else if (first === "Cordinación") head = cells.map((c) => c[0]);
+    else if (/^\[[TL]-\d+\]$/.test(first)) {
+      const evals = [], shares = {};
+      head.forEach((h, i) => {
+        const e = h.match(/^(\d\d)-(\d\d)-(\d{4})\s+([^\n]*?)\s*(?:\n\s*([\d.,]+)\s*%)?\s*$/);
+        const s = h.match(/^Promedio (Teor|Lab)\D*?([\d.,]+)\s*%$/);
+        const g = parseFloat((cells[i]?.[0] || "").replace(",", "."));
+        if (e) evals.push({ date: `${e[3]}-${e[2]}-${e[1]}`, name: e[4], weight: parseFloat((e[5] || "0").replace(",", ".")), grade: g >= 1 ? g : null });
+        if (s) shares[s[1][0]] = parseFloat(s[2].replace(",", "."));
+      });
+      notas.push({ name, section: first, evals, shares });
+    }
+  }
+  return { asistencia, notas };
+}
+const READERS = { "phoenix.cic.userena.cl": readPhoenix };
 
 // "Progr. Avanzada" ≈ "Programación Avanzada": proporción de palabras donde una es el inicio de la otra
 const words = (s) => String(s).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().match(/[a-z0-9]+/g) || [];
@@ -1047,7 +1063,7 @@ const IN_PHOENIX = "Entra a Phoenix con tu cuenta (sirve cualquier página de Ph
 const CONFIRM = "Se abre Faltapp con tus faltas y tus notas. La primera vez revisa que cada ramo esté bien elegido y toca <b>Importar</b>; las siguientes se importa solo. ¡Listo!";
 
 function importHelp(v) {
-  const bm = "javascript:" + encodeURIComponent(`void (${phoenixGrab})(${JSON.stringify(location.origin)})`);
+  const bm = "javascript:" + encodeURIComponent(`void (${grabPages})(${JSON.stringify(location.origin)}, ${JSON.stringify(PHOENIX_PAGES)})`);
   const guides = {
     pc: steps("Primera vez: guarda el botón", [
       "Muestra la barra de marcadores de tu navegador: presiona <b>Ctrl + Shift + B</b> (en Mac: <b>Cmd + Shift + B</b>). Aparece una barra debajo de la dirección.",
@@ -1123,10 +1139,12 @@ async function importar(v, arg) {
   let d = null;
   try { d = arg && JSON.parse(decodeURIComponent(arg)); } catch { toast("No pude leer los datos de Phoenix: vuelve a tocar el marcador", true); }
   if (Array.isArray(d)) d = d.every((r) => Array.isArray(r.evals)) ? { notas: d } : { asistencia: d }; // marcadores antiguos: una sola página
+  const stale = d && !d.pages; // los marcadores que leían dentro de Phoenix: hay que renovarlos una última vez
+  if (d?.pages) d = READERS[d.portal]?.(d.pages);
   const asis = (d?.asistencia || []).filter((r) => Array.isArray(r.absent) && Array.isArray(r.present));
   const ph = Object.values((d?.notas || []).filter((r) => Array.isArray(r.evals)).reduce((m, r) => ((m[r.name] ||= []).push(r), m), {}));
   if (!asis.length && !ph.length) return importHelp(v);
-  if (asis.length && (d.v || 0) < 3) toast("Tu marcador de Phoenix está desactualizado (no trae las ausencias justificadas): bórralo y vuelve a guardarlo desde Importar", true);
+  if (stale) toast("Tu marcador de Phoenix está desactualizado: bórralo y vuelve a guardarlo desde Importar (el nuevo ya no hay que renovarlo)", true);
   const sem = await activeSemester();
   if (!sem) { location.hash = "#semestre"; return; }
   const { courses } = await api("GET", `/semesters/${sem.id}`);

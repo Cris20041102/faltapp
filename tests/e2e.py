@@ -1,5 +1,6 @@
 """E2E con Playwright. Uso: python tests/e2e.py  (no lo corre pytest)."""
 import base64
+import json
 import urllib.parse
 import os
 import signal
@@ -249,6 +250,14 @@ def main():
             imp.wait_for_url("**/#inicio")
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos")).to_contain_text("✅ Justificadas: 2/09")
+
+            # un marcador antiguo (leía dentro de Phoenix) sigue importando, pero pide renovarlo
+            old = {"asistencia": [{"name": "Bases de Datos I", "section": "[L-1]", "absent": ["2026-08-19", "2026-08-26"],
+                                   "present": ["2026-08-12", "2026-09-02", "2026-10-07"], "justified": ["2026-09-02"]}], "v": 3}
+            imp.goto(URL + "/#importar/" + urllib.parse.quote(json.dumps(old)))
+            expect(imp.get_by_text("Tu marcador de Phoenix está desactualizado")).to_be_visible()
+            imp.wait_for_url("**/#inicio")
+            expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
 
             # marcar en 1 toque desde Inicio (últimas clases), sirve igual en PC, Android y iPhone
             q = imp.locator("[data-quick]").first
