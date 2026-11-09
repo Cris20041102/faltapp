@@ -868,6 +868,9 @@ def summary(id: int, today: date = Depends(today_param), user: User = Depends(cu
     res = calc.summarize(p, today)
     extra = {c["id"]: {k: c[k] for k in ("slots", "makeups", "grades", "justified")} for c in full["courses"]}
     res["courses"] = [c | extra[c["id"]] for c in res["courses"]]
+    for c in res["courses"]:  # bloques ya dictados que Phoenix justificó (misma unidad que dictadas y reales, para los %)
+        c["justificadas"] = sum(d <= today and d.isoformat() in c["justified"] and (x.id, d) not in p.absences
+                                for x in p.slots if x.course_id == c["id"] for d in p.dates[x.id])
     return res | {
         "semester": semester_out(s),
         "no_class_days": full["no_class_days"],

@@ -467,6 +467,7 @@ function phoenixItems(rows) {
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
+  const just = c.justificadas ?? 0, pct = (n) => `${Math.round((100 * n) / c.dictadas)}%`; // ??: copia guardada de antes
   return `
     <article data-course="${c.id}" class="card">
       <div class="flex items-start justify-between gap-2">
@@ -475,6 +476,7 @@ function courseCard(c) {
       </div>
       <div class="mt-2 flex items-baseline gap-2"><span data-quedan class="text-4xl font-bold ${tone}">${c.quedan}</span><span class="text-sm text-slate-600">${msg}</span></div>
       <p class="mt-1 text-xs text-slate-500">Van ${c.dictadas} de ${c.total} clases · mínimo ${c.minimo} · faltaste ${c.reales}${c.planeadas ? ` · planeas ${c.planeadas}` : ""}</p>
+      ${c.dictadas ? `<p data-pct class="mt-1 text-xs text-slate-500">Asistencia <b class="text-green-600">${pct(c.dictadas - c.reales - just)}</b> · Justificado <b>${pct(just)}</b> · Inasistencia <b class="text-red-600">${pct(c.reales)}</b></p>` : ""}
       ${c.faltar_todo ? `<p class="mt-2 rounded-lg bg-green-50 px-2 py-1 text-xs font-medium text-green-700">🎉 Ya puedes faltar a todas las que quedan (${c.restantes - c.planeadas})</p>` : ""}
       ${c.makeups.map((m) => `<p class="mt-2 flex items-center gap-2 text-xs text-slate-500"><span class="flex-1">🔁 Clase del ${shortDate(m.original)} recuperada el ${longDate(m.date).toLowerCase()}</span><button data-unmakeup="${m.id}" class="h-7 w-7 shrink-0 rounded-full" aria-label="Quitar recuperación del ${shortDate(m.date)}">&#10005;</button></p>`).join("")}
       ${c.justified?.length ? `<p class="mt-2 text-xs text-slate-500">✅ Justificadas: ${c.justified.map(shortDate).join(", ")}</p>` : ""}

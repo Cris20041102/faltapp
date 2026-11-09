@@ -323,6 +323,9 @@ def main():
             bd = dp.locator("[data-course]").filter(has_text="Bases de Datos")
             expect(dp.locator("[data-progress]")).to_contain_text("Llevas 15 de 16 días de clases")
             expect(bd).to_contain_text("Van 15 de 16 clases")
+            # como en Phoenix: % de asistencia, justificado (2/09) e inasistencia sobre las 15 clases hechas
+            expect(bd.locator("[data-pct]")).to_have_text("Asistencia 87% · Justificado 7% · Inasistencia 7%" if was else
+                                                         "Asistencia 73% · Justificado 7% · Inasistencia 20%")
             expect(bd.get_by_text("Ya puedes faltar a todas las que quedan")).to_be_visible()
             expect(dp.get_by_text("Ya puedes faltar a todo lo que queda del semestre")).to_be_visible()
             dic.close()

@@ -90,3 +90,18 @@ def test_importar_justificadas(client):
     assert course()["justified"] == ["2026-09-09"]  # Phoenix la quitó
     client.post("/api/absences/import", headers=h, json={"items": [{k: v for k, v in item.items() if k != "justified"}]})
     assert course()["justified"] == ["2026-09-09"]  # marcador antiguo: no trae justificadas, no las borra
+
+
+def test_porcentajes_cuentan_justificadas_solo_en_clases_ya_hechas(client):
+    """Para el % justificado: solo justificadas en días con clase ya dictada y sin falta marcada (unidad: bloque, igual que dictadas)."""
+    h = register(client)
+    s = new_semester(client, h)
+    c = new_course(client, h, s["id"])  # miércoles: al 29-09 van 7 clases (12-08 … 23-09)
+    client.post("/api/absences/import", headers=h, json={"items": [{
+        "course_id": c["id"], "absent": ["2026-08-19", "2026-08-26"], "present": ["2026-09-02", "2026-09-16"],
+        "justified": ["2026-09-02", "2026-09-16", "2026-09-03", "2026-10-07"]}]})  # 03-09 es jueves; 07-10 aún no pasa
+    got = summary(client, h, s["id"])["courses"][0]
+    assert (got["dictadas"], got["reales"], got["justificadas"]) == (7, 2, 2)
+    client.post("/api/absences", headers=h, json={"date": "2026-09-16"})  # la marca como falta a mano: no cuenta dos veces
+    got = summary(client, h, s["id"])["courses"][0]
+    assert (got["reales"], got["justificadas"]) == (3, 1)
