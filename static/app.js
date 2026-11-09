@@ -1542,6 +1542,9 @@ async function render() {
   $("#nav").classList.toggle("hidden", !token);
   $$("#nav [data-route]").forEach((a) => a.classList.toggle("text-indigo-600", a.dataset.route === route));
   const v = $("#view"), changed = route !== shown, seq = ++renderSeq;
+  // entre pestañas de la barra, la nueva pantalla entra desde el lado de la pestaña tocada; si no, entra desde abajo
+  const order = $$("#nav [data-route]").map((a) => a.dataset.route), a = order.indexOf(shown), b = order.indexOf(route);
+  const dir = a < 0 || b < 0 ? "" : b < a ? "-l" : b > a ? "-r" : "";
   document.title = "Faltapp";
   if (changed && shown) v.classList.add("leaving"); // la pantalla anterior se desenfoca mientras carga la nueva
   try {
@@ -1562,9 +1565,9 @@ async function render() {
   if (changed) {
     shown = route;
     scrollTo(0, 0);
-    v.classList.remove("entering");
+    v.classList.remove("entering", "entering-l", "entering-r");
     void v.offsetWidth; // reinicia la animación
-    v.classList.add("entering");
+    v.classList.add("entering" + dir);
   }
 }
 

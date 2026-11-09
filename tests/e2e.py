@@ -328,6 +328,13 @@ def main():
                                                          "Asistencia 73% · Justificado 7% · Inasistencia 20%")
             expect(bd.get_by_text("Ya puedes faltar a todas las que quedan")).to_be_visible()
             expect(dp.get_by_text("Ya puedes faltar a todo lo que queda del semestre")).to_be_visible()
+            # entre pestañas de la barra la pantalla entra deslizándose desde el lado de la pestaña tocada
+            dp.evaluate("location.hash = '#notas'")  # Notas está a la derecha de Inicio
+            expect(dp.locator("#view.entering-r")).to_be_attached()
+            dp.evaluate("location.hash = '#horario'")  # Horario queda a la izquierda de Notas
+            expect(dp.locator("#view.entering-l")).to_be_attached()
+            dp.evaluate("location.hash = '#perfil'")  # Perfil no está en la barra: entra como siempre
+            expect(dp.locator("#view.entering")).to_be_attached()
             dic.close()
             # 1 de octubre: aún no puede faltar a todo, pero sí si va seguido unas semanas
             octc = b.new_context(viewport={"width": 390, "height": 844})
