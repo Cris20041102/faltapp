@@ -1546,7 +1546,8 @@ async function render() {
   const order = $$("#nav [data-route]").map((a) => a.dataset.route), a = order.indexOf(shown), b = order.indexOf(route);
   const dir = a < 0 || b < 0 ? "" : b < a ? "-l" : b > a ? "-r" : "";
   document.title = "Faltapp";
-  if (changed && shown) v.classList.add("leaving"); // la pantalla anterior se desenfoca mientras carga la nueva
+  // respuesta al tiro al tocar: la pantalla anterior se corre hacia el otro lado y se desenfoca mientras carga la nueva
+  if (changed && shown) { v.classList.remove("leaving", "leaving-l", "leaving-r"); v.classList.add("leaving" + dir); }
   try {
     if (token && !ME) ME = await api("GET", "/me");
     $("#hdr").innerHTML = ME ? `<a href="#perfil" class="flex items-center gap-2 opacity-95">${avatar(ME, "sm")}@${esc(ME.username)}</a>` : "";
@@ -1561,7 +1562,7 @@ async function render() {
     console.warn(e); // el error ya se mostró como toast
   }
   if (seq !== renderSeq) return;
-  v.classList.remove("leaving");
+  v.classList.remove("leaving", "leaving-l", "leaving-r");
   if (changed) {
     shown = route;
     scrollTo(0, 0);
