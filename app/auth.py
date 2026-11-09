@@ -38,9 +38,29 @@ def make_token(user_id: int) -> str:
     return jwt.encode({"sub": str(user_id), "exp": exp}, JWT_SECRET, algorithm="HS256")
 
 
+def make_link(user_id: int, use: str, minutes: int, **extra) -> str:
+    """Token para un enlace que va por correo. Lleva "use": sirve solo para eso, nunca como sesión."""
+    exp = datetime.now(timezone.utc) + timedelta(minutes=minutes)
+    return jwt.encode({"sub": str(user_id), "use": use, "exp": exp, **extra}, JWT_SECRET, algorithm="HS256")
+
+
+def read_link(token: str, use: str, db: Session) -> tuple[User, dict]:
+    try:
+        data = jwt.decode(token, JWT_SECRET, algorithms=["HS256"])
+        user = db.get(User, int(data["sub"])) if data.get("use") == use else None
+    except (jwt.PyJWTError, KeyError, ValueError):
+        user = None
+    if not user:
+        raise HTTPException(400, "El enlace no sirve o ya venció. Pide otro")
+    return user, data
+
+
 def current_user(authorization: str = Header(""), db: Session = Depends(get_db)) -> User:
     try:
-        uid = int(jwt.decode(authorization.removeprefix("Bearer "), JWT_SECRET, algorithms=["HS256"])["sub"])
+        data = jwt.decode(authorization.removeprefix("Bearer "), JWT_SECRET, algorithms=["HS256"])
+        if data.get("use"):  # un enlace de correo (podría llegarle a un extraño) no es una sesión
+            raise ValueError
+        uid = int(data["sub"])
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(401, "Sesión inválida")
     user = db.get(User, uid)

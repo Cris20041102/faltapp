@@ -91,3 +91,14 @@ def test_codigo_para_cuentas_existentes(client):
     assert nuevo != otro
     assert client.post("/api/auth/recover", json={"username": "cristian", "code": nuevo, "password": "nueva123"}).status_code == 401
     assert client.post("/api/auth/recover", json={"username": "cristian", "code": otro, "password": "nueva123"}).status_code == 200
+
+
+def test_codigo_obligatorio_no_pisa_uno_que_ya_existe(client, monkeypatch):
+    """Cuenta de antes (sin código): el cuadro obligatorio lo crea. Si ya tiene uno (lo creó en otro aparato), no lo cambia."""
+    with monkeypatch.context() as m:
+        m.setattr("app.api.new_recovery", lambda u: None)  # como las cuentas creadas antes de que existieran los códigos
+        h = register(client)
+    assert client.get("/api/me", headers=h).json()["has_recovery"] is False
+    code = client.post("/api/me/recovery", headers=h, params={"missing": True}).json()["recovery_code"]
+    assert client.post("/api/me/recovery", headers=h, params={"missing": True}).json() == {"recovery_code": None}
+    assert client.post("/api/auth/recover", json={"username": "cristian", "code": code, "password": "nueva123"}).status_code == 200

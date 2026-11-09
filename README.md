@@ -42,4 +42,7 @@ El plan gratis de Render duerme tras ~15 min sin uso: la primera carga tarda uno
 |---|---|
 | `DATABASE_URL` | Postgres (`postgres://` y `postgresql://` se aceptan) |
 | `JWT_SECRET` | secreto para firmar sesiones (obligatorio en producción) |
+| `RESEND_API_KEY` | clave de [Resend](https://resend.com) para el correo de recuperación; sin ella esa opción no aparece |
+| `MAIL_FROM` | remitente de esos correos (por defecto `Faltapp <faltapp@appscristianrojo.cl>`; el dominio debe estar verificado en Resend) |
+| `PUBLIC_URL` | dirección pública de la app, para los enlaces de los correos (por defecto `https://faltapp.appscristianrojo.cl`) |
 | `FALTAPP_NO_HOLIDAYS` | si existe, no consulta la API de feriados (tests) |

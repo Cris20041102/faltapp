@@ -1,13 +1,16 @@
 """E2E con Playwright. Uso: python tests/e2e.py  (no lo corre pytest)."""
 import base64
+import http.server
 import json
 import urllib.parse
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -93,9 +96,40 @@ def sw_takeover(browser):
         srv.shutdown()
 
 
+def fake_resend(mails):
+    """Resend simulado: guarda cada correo que la app manda (nada sale a internet)."""
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            mails.append(json.loads(self.rfile.read(int(self.headers["content-length"]))))
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"id": "e2e"}')
+
+        def log_message(self, *args):
+            pass
+    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 8767), Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv
+
+
+def mail_link(mails, to, kind):
+    """El enlace del último correo de ese tipo enviado a `to` (el de cambiar la contraseña sale en segundo plano)."""
+    for _ in range(100):
+        for m in reversed(mails):
+            found = re.search(rf"http\S+#{kind}/\S+", m["text"])
+            if m["to"] == [to] and found:
+                return found.group(0)
+        time.sleep(0.1)
+    raise AssertionError(f"no llegó el correo de {kind} a {to}: {mails}")
+
+
 def main():
     db = Path(tempfile.mkdtemp()) / "e2e.db"
-    env = {**os.environ, "DATABASE_URL": f"sqlite:///{db}", "FALTAPP_NO_HOLIDAYS": "1"}
+    mails = []
+    resend = fake_resend(mails)
+    env = {**os.environ, "DATABASE_URL": f"sqlite:///{db}", "FALTAPP_NO_HOLIDAYS": "1",
+           "RESEND_API_KEY": "re_e2e", "RESEND_URL": "http://127.0.0.1:8767/emails", "PUBLIC_URL": URL}
     subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], cwd=ROOT, env=env, check=True, capture_output=True)
     srv = subprocess.Popen([sys.executable, "-m", "uvicorn", "app.main:app", "--port", str(PORT)], cwd=ROOT, env=env,
                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -464,7 +498,10 @@ def main():
             rp = rc.new_page()
             rp.goto(URL)
             rp.get_by_role("button", name="¿Olvidaste tu contraseña?").click()
-            rp.get_by_label("Usuario").fill("cristian")
+            # sin código ni correo verificado nadie puede comprobar de quién es la cuenta: se dice tal cual
+            expect(rp.get_by_text("no hay forma de comprobar que la cuenta es tuya")).to_be_visible()
+            expect(rp.get_by_text("quien administra Faltapp")).to_have_count(0)
+            rp.get_by_label("Usuario", exact=True).fill("cristian")
             rp.get_by_label("Código de recuperación").fill(code.lower())
             rp.get_by_label("Contraseña nueva").fill("nueva123")
             rp.get_by_role("button", name="Cambiar contraseña y entrar").click()
@@ -472,12 +509,68 @@ def main():
             rp.get_by_role("button", name="Ya lo guardé").click()
             rp.wait_for_url("**/#inicio")
             rc.close()
+
+            # cuenta de antes (sin código de recuperación): al abrir Faltapp tiene que crearlo; el cuadro no se puede saltar
+            tok = httpx.post(URL + "/api/auth/register", json={"username": "antigua", "display_name": "Antigua", "password": "secreto1"}).json()["token"]
+            con = sqlite3.connect(db)
+            con.execute("UPDATE users SET recovery_hash = NULL WHERE username = 'antigua'")
+            con.commit()
+            con.close()
+            ac = b.new_context(viewport={"width": 390, "height": 844})
+            ap = ac.new_page()
+            ap.goto(URL)
+            ap.evaluate("t => localStorage.setItem('token', t)", tok)
+            ap.goto(URL + "/?r=1#perfil")
+            must = ap.get_by_role("heading", name="Crea tu código de recuperación")
+            expect(must).to_be_visible()
+            ap.keyboard.press("Escape")
+            ap.keyboard.press("Escape")
+            ap.evaluate("location.hash = '#amigos'")
+            expect(ap.get_by_role("heading", name="Amigos", exact=True)).to_be_attached()
+            expect(must).to_be_visible()
+            ap.get_by_role("button", name="Crear mi código").click()
+            expect(ap.locator("[data-recovery-code]")).to_have_text(re.compile(r"^[A-Z2-9]{4}-[A-Z2-9]{4}-[A-Z2-9]{4}$"))
+            ap.keyboard.press("Escape")
+            ap.keyboard.press("Escape")
+            expect(ap.locator("[data-recovery-code]")).to_be_visible()  # se muestra una sola vez: no se cierra por accidente
+            ap.get_by_role("button", name="Ya lo guardé").click()
+            expect(ap.locator("#dlg")).not_to_have_attribute("open", "")
+            ap.reload()
+            expect(ap.get_by_role("heading", name="Amigos", exact=True)).to_be_visible()
+            expect(must).to_have_count(0)  # ya lo tiene: no se le vuelve a pedir
+            ac.close()
+
+            # correo de recuperación: se agrega en el perfil y queda guardado recién al abrir el enlace que llega
+            page.goto(URL + "/#perfil")
+            page.get_by_label("Correo", exact=True).fill("Cris@correo.cl")
+            page.get_by_role("button", name="Verificar").click()
+            expect(page.get_by_text("Te enviamos un enlace")).to_be_visible()
+            vc = b.new_context(viewport={"width": 390, "height": 844})  # el correo se abre en otro navegador, sin sesión
+            vp = vc.new_page()
+            vp.goto(mail_link(mails, "cris@correo.cl", "verificar"))
+            expect(vp.get_by_role("heading", name="Correo confirmado")).to_be_visible()
+            page.reload()
+            expect(page.locator("[data-email-card]")).to_contain_text("cris@correo.cl")
+            # olvidó la contraseña y no tiene el código: pide el enlace con su correo y pone otra
+            vp.get_by_role("link", name="Entrar a Faltapp").click()
+            vp.get_by_role("button", name="¿Olvidaste tu contraseña?").click()
+            vp.get_by_label("Usuario o correo").fill("cris@correo.cl")
+            vp.get_by_role("button", name="Enviarme el enlace").click()
+            expect(vp.get_by_text("ya te enviamos el enlace")).to_be_visible()
+            vp.goto(mail_link(mails, "cris@correo.cl", "restablecer"))
+            vp.get_by_label("Contraseña nueva").fill("porcorreo1")
+            vp.get_by_role("button", name="Guardar y entrar").click()
+            vp.wait_for_url("**/#inicio")
+            expect(vp.locator("[data-progress]")).to_be_visible()
+            assert httpx.post(URL + "/api/auth/login", json={"username": "cristian", "password": "porcorreo1"}).status_code == 200
+            vc.close()
             assert not errors, errors
             sw_takeover(b)
             b.close()
         print("E2E PASS")
     finally:
         srv.terminate()
+        resend.shutdown()
 
 
 if __name__ == "__main__":

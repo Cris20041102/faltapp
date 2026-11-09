@@ -109,6 +109,7 @@ async function activeSemester() {
 }
 
 // ---------- diálogo ----------
+let dlgLocked = false; // cuadro que hay que responder (código de recuperación): no se cierra con Escape, tocando afuera ni al cambiar de pantalla
 function openDialog(html, onMount) {
   $("#dlg-body").innerHTML = html;
   const d = $("#dlg");
@@ -116,8 +117,9 @@ function openDialog(html, onMount) {
   $$("[data-close]", d).forEach((b) => (b.onclick = () => d.close()));
   onMount?.(d);
 }
-const closeDialog = () => $("#dlg").close();
+const closeDialog = () => { if (!dlgLocked) $("#dlg").close(); };
 $("#dlg").addEventListener("click", (e) => { if (e.target.id === "dlg") closeDialog(); });
+$("#dlg").addEventListener("close", () => { if (dlgLocked) $("#dlg").showModal(); }); // Escape lo cierra igual: se vuelve a abrir
 
 const formData = (f) => Object.fromEntries(new FormData(f));
 
@@ -165,10 +167,29 @@ function showRecovery(code, then) {
       <h2 class="h2">🔑 Tu código de recuperación</h2>
       <p class="muted">Si olvidas tu contraseña, con tu usuario y este código pones una nueva. Guárdalo (una captura o en tus notas): no lo vas a volver a ver.</p>
       <p data-recovery-code class="mt-4 rounded-xl bg-indigo-50 p-3 text-center font-mono text-xl font-bold text-indigo-900">${esc(code)}</p>
-      <div class="mt-4 grid grid-cols-2 gap-2"><button data-copy-code class="btn">Copiar</button><button data-close class="btn-primary">Ya lo guardé</button></div>
+      <div class="mt-4 grid grid-cols-2 gap-2"><button data-copy-code class="btn">Copiar</button><button data-saved class="btn-primary">Ya lo guardé</button></div>
     </div>`, (d) => {
+    dlgLocked = true;
     $("[data-copy-code]", d).onclick = async () => { try { await navigator.clipboard.writeText(code); toast("Código copiado ✓"); } catch { toast(code); } };
-    if (then) d.addEventListener("close", then, { once: true });
+    $("[data-saved]", d).onclick = () => { dlgLocked = false; d.close(); then?.(); };
+  });
+}
+// Cuentas creadas antes de que existieran los códigos: tienen que crear el suyo mientras siguen con la sesión abierta,
+// que es lo único que prueba que la cuenta es de ellas. Se crea al tocar el botón (no solo, por si la pestaña está de fondo).
+function requireRecovery() {
+  openDialog(`
+    <div class="p-5">
+      <h2 class="h2">🔑 Crea tu código de recuperación</h2>
+      <p class="muted">Si un día olvidas tu contraseña, lo vas a necesitar para recuperar tu cuenta. Toma unos segundos.</p>
+      <button data-make class="btn-primary mt-4 w-full">Crear mi código</button>
+    </div>`, (d) => {
+    dlgLocked = true;
+    $("[data-make]", d).onclick = async () => {
+      const { recovery_code } = await api("POST", "/me/recovery?missing=true");
+      ME = { ...ME, has_recovery: true };
+      if (recovery_code) showRecovery(recovery_code);
+      else { dlgLocked = false; d.close(); } // ya lo había creado en otro aparato: ese sigue valiendo
+    };
   });
 }
 async function newRecovery() {
@@ -210,7 +231,7 @@ function login(v) {
 
 // con código nuevo (al crear la cuenta o al recuperarla) se muestra antes de entrar
 function enter(t, code) {
-  token = t; store.set("token", t);
+  token = t; store.set("token", t); ME = null;
   clearSaved();
   if (code) showRecovery(code, () => (location.hash = "#inicio"));
   else location.hash = "#inicio";
@@ -227,8 +248,9 @@ function recoverForm(v) {
         <label class="field">Contraseña nueva<input class="input" name="password" type="password" autocomplete="new-password" required minlength="6"></label>
         <button class="btn-primary w-full py-3">Cambiar contraseña y entrar</button>
       </form>
+      <div data-by-mail></div>
       <button data-back class="mt-3 w-full text-center text-sm font-medium text-indigo-600">Volver a entrar</button>
-      <p class="mt-4 text-center text-xs text-slate-500">¿No tienes el código? Pídele a quien administra Faltapp que te ayude.</p>
+      <p class="mt-4 text-center text-xs text-slate-500">Sin el código ni un correo verificado no hay forma de comprobar que la cuenta es tuya: tendrás que crear una cuenta nueva.</p>
     </div>`;
   $("[data-back]", v).onclick = () => { loginMode = "login"; login(v); };
   $("form", v).onsubmit = async (e) => {
@@ -237,6 +259,52 @@ function recoverForm(v) {
     loginMode = "login";
     toast("Contraseña cambiada ✓");
     enter(t, recovery_code);
+  };
+  // la opción del correo aparece cuando el servidor confirma que puede enviarlos (el formulario del código no espera por eso)
+  const slot = $("[data-by-mail]", v);
+  api("GET", "/auth/options", null, { quiet: true }).then(({ mail }) => {
+    if (!mail) return;
+    slot.innerHTML = `
+      <form class="card mt-4 space-y-3">
+        <p class="text-sm font-medium">¿No tienes el código? Si confirmaste tu correo en Faltapp, te mandamos un enlace para cambiar la contraseña.</p>
+        <label class="field">Usuario o correo<input class="input" name="login" required maxlength="254" autocapitalize="none"></label>
+        <button class="btn w-full">Enviarme el enlace</button>
+      </form>`;
+    $("form", slot).onsubmit = async (e) => {
+      e.preventDefault();
+      await api("POST", "/auth/forgot", formData(e.target));
+      e.target.reset();
+      toast("Si esa cuenta tiene un correo confirmado, ya te enviamos el enlace (revisa el spam)");
+    };
+  }, () => {});
+}
+
+// ---------- enlaces que llegan por correo (se abren sin sesión, quizás en otro navegador) ----------
+async function verificar(v, tok) {
+  const r = await api("POST", "/auth/verify-email", { token: tok }).catch(() => null); // si falla, el motivo ya salió como aviso
+  if (r && ME) ME = { ...ME, email: r.email };
+  v.innerHTML = `
+    <div class="mx-auto max-w-sm pt-6 text-center">
+      <h1 class="h1">${r ? "✅ Correo confirmado" : "Ese enlace no sirve"}</h1>
+      <p class="muted mt-2">${r ? `Si olvidas tu contraseña, te mandamos a ${esc(r.email)} un enlace para cambiarla.` : "Puede que haya vencido. Pide otro desde tu perfil."}</p>
+      <a href="${token ? "#perfil" : "#login"}" class="btn-primary mt-4">${token ? "Ir a mi perfil" : "Entrar a Faltapp"}</a>
+    </div>`;
+}
+
+function restablecer(v, tok) {
+  v.innerHTML = `
+    <div class="mx-auto max-w-sm pt-6">
+      <h1 class="h1 text-center">Pon tu contraseña nueva</h1>
+      <form class="card mt-4 space-y-3">
+        <label class="field">Contraseña nueva<input class="input" name="password" type="password" autocomplete="new-password" required minlength="6"></label>
+        <button class="btn-primary w-full py-3">Guardar y entrar</button>
+      </form>
+    </div>`;
+  $("form", v).onsubmit = async (e) => {
+    e.preventDefault();
+    const { token: t } = await api("POST", "/auth/reset", { token: tok, ...formData(e.target) });
+    toast("Contraseña cambiada ✓");
+    enter(t);
   };
 }
 
@@ -420,7 +488,6 @@ async function inicio(v) {
   const [s, pstate] = await Promise.all([api("GET", `/semesters/${sem.id}/summary?today=${today()}`), pushState()]);
   const pushBanner = ["off", "ios"].includes(pstate) && !store.get("push-banner-off");
   const careerBanner = !ME.career && !store.get("career-banner-off");
-  const recoveryBanner = !ME.has_recovery && !store.get("recovery-banner-off");
   const wd = Object.entries(s.weekdays);
   // las 2 últimas jornadas con clases (hasta hoy): marcar una falta es 1 toque, sin buscar en el calendario
   const recent = Object.keys(s.calendar).filter((d) => d <= today() && s.calendar[d] !== "gris").sort().slice(-2).reverse();
@@ -469,14 +536,6 @@ async function inicio(v) {
           <p class="text-sm">Te avisamos de pruebas, de cuando te quedan pocas faltas y de tus amigos.</p>
           ${pstate === "ios" ? `<a href="#perfil" class="btn mt-2">Cómo activarlas en iPhone</a>` : `<button data-push-on class="btn-primary mt-2">Activar</button>`}</div>
         <button data-push-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso">&#10005;</button>
-      </section>` : ""}
-    ${recoveryBanner ? `
-      <section data-recovery-banner class="mt-4 flex items-start gap-3 rounded-2xl bg-amber-50 p-4 text-amber-900">
-        <span class="text-2xl" aria-hidden="true">🔑</span>
-        <div class="flex-1"><p class="font-semibold">Crea tu código de recuperación</p>
-          <p class="text-sm">Si olvidas tu contraseña, con él recuperas tu cuenta.</p>
-          <button data-recovery class="btn-primary mt-2">Crear código</button></div>
-        <button data-recovery-dismiss class="h-8 w-8 shrink-0 text-amber-700" aria-label="Cerrar aviso del código">&#10005;</button>
       </section>` : ""}
     ${careerBanner ? `
       <section data-career-banner class="mt-4 flex items-start gap-3 rounded-2xl bg-indigo-50 p-4 text-indigo-900">
@@ -541,10 +600,6 @@ async function inicio(v) {
   bindPush(v);
   const dismiss = $("[data-push-dismiss]", v);
   if (dismiss) dismiss.onclick = () => { store.set("push-banner-off", "1"); render(); };
-  const recoveryOff = $("[data-recovery-dismiss]", v);
-  if (recoveryOff) recoveryOff.onclick = () => { store.set("recovery-banner-off", "1"); render(); };
-  const recoveryBtn = $("[data-recovery]", v);
-  if (recoveryBtn) recoveryBtn.onclick = newRecovery;
   const careerOff = $("[data-career-dismiss]", v);
   if (careerOff) careerOff.onclick = () => { store.set("career-banner-off", "1"); render(); };
   $$("[data-quick]", v).forEach((b) => (b.onclick = async () => {
@@ -907,6 +962,15 @@ async function perfil(v) {
     <section class="card mt-4"><h2 class="h2">🔑 Código de recuperación</h2>
       <p class="muted">${ME.has_recovery ? "Ya tienes uno. Si lo perdiste, crea otro: el anterior deja de servir." : "Si olvidas tu contraseña, con este código recuperas tu cuenta. Aún no tienes uno."}</p>
       <button data-recovery class="${ME.has_recovery ? "btn" : "btn-primary"} mt-2">${ME.has_recovery ? "Crear uno nuevo" : "Crear código"}</button></section>
+    ${ME.mail_on ? `
+    <section data-email-card class="card mt-4"><h2 class="h2">📧 Correo de recuperación</h2>
+      <p class="muted">${ME.email ? `Confirmado: <b>${esc(ME.email)}</b>. Si olvidas tu contraseña, ahí te mandamos un enlace para cambiarla.` : "Si olvidas tu contraseña y no tienes tu código, te mandamos un enlace a tu correo para cambiarla."}</p>
+      <form data-email class="mt-2 space-y-2">
+        <label class="field">${ME.email ? "Cambiar por otro correo" : "Correo"}<input class="input" name="email" type="email" required maxlength="254" autocomplete="email" placeholder="tu@correo.cl"></label>
+        <button class="btn-primary">${ME.email ? "Cambiar" : "Verificar"}</button>
+        ${ME.email ? `<button type="button" data-email-off class="btn">Quitar correo</button>` : ""}
+      </form>
+    </section>` : ""}
     ${themeCard()}
     <a href="#semestre" class="btn mt-4 w-full">Semestre, fechas y feriados</a>
     <button data-logout class="mt-6 w-full text-center text-sm text-slate-500">Cerrar sesión</button>`;
@@ -928,6 +992,14 @@ async function perfil(v) {
   if (del) del.onclick = async () => { await api("DELETE", "/me/avatar"); ME = await api("GET", "/me"); render(); };
   $("[data-logout]", v).onclick = logout;
   $("[data-recovery]", v).onclick = newRecovery;
+  const mailForm = $("[data-email]", v), mailOff = $("[data-email-off]", v);
+  if (mailForm) mailForm.onsubmit = async (e) => {
+    e.preventDefault();
+    await api("PUT", "/me/email", formData(mailForm));
+    mailForm.reset();
+    toast("Te enviamos un enlace a ese correo: ábrelo para confirmarlo (revisa el spam)");
+  };
+  if (mailOff) mailOff.onclick = async () => { await api("DELETE", "/me/email"); ME = { ...ME, email: null }; render(); };
   bindPush(v);
   bindTheme(v);
 }
@@ -1456,15 +1528,16 @@ const bindTheme = (v) => $$("[data-theme-pick]", v).forEach((b) => (b.onclick = 
 }));
 
 // ---------- router ----------
-const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda, notas };
+const routes = { login, inicio, horario, semestre, perfil, importar, amigos, propuestas, agenda, notas, verificar, restablecer };
+const PUBLIC = ["login", "verificar", "restablecer"]; // se ven sin sesión (las dos últimas llegan por correo)
 let shown = null; // pantalla que se ve ahora: solo se anima al cambiar de pantalla, no al refrescar la misma
 let renderSeq = 0;
 async function render() {
   const [name, arg] = location.hash.slice(1).split("/");
   const route = routes[name] ? name : token ? "inicio" : "login";
-  if (!token && route !== "login") { location.hash = "#login"; return; }
+  if (!token && !PUBLIC.includes(route)) { location.hash = "#login"; return; }
   if (token && route === "login") { location.hash = "#inicio"; return; }
-  $("#nav").classList.toggle("hidden", route === "login");
+  $("#nav").classList.toggle("hidden", !token);
   $$("#nav [data-route]").forEach((a) => a.classList.toggle("text-indigo-600", a.dataset.route === route));
   const v = $("#view"), changed = route !== shown, seq = ++renderSeq;
   document.title = "Faltapp";
@@ -1478,6 +1551,7 @@ async function render() {
     if (seq !== renderSeq || !box.childNodes.length) return; // otra pantalla en camino, o esta redirigió
     v.replaceChildren(box);
     if (ME) { refreshBadge(); syncPush(); }
+    if (ME?.has_recovery === false && !$("#dlg").open) requireRecovery(); // === false: una copia guardada de antes no trae el dato
   } catch (e) {
     console.warn(e); // el error ya se mostró como toast
   }

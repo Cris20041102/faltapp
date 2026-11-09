@@ -1,5 +1,7 @@
 import datetime as dt
+import hashlib
 import hmac
+import logging
 import os
 import re
 import secrets
@@ -9,14 +11,14 @@ from time import monotonic
 from zoneinfo import ZoneInfo
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field, field_validator, model_validator
 from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth import current_user, hash_password, make_token, verify_password
+from app.auth import current_user, hash_password, make_link, make_token, read_link, verify_password
 from app.horario_uls import parse as parse_horario_uls
 from app import calc, push
 from app.db import get_db
@@ -52,7 +54,8 @@ USERNAME_DAYS, NAME_DAYS = 30, 14
 def me_out(u: User) -> dict:
     nxt = lambda at, days: (n := next_change(at, days)) and n.isoformat()
     return profile_out(u) | {"username_next_change": nxt(u.username_changed_at, USERNAME_DAYS),
-                             "display_name_next_change": nxt(u.display_name_changed_at, NAME_DAYS), "has_recovery": bool(u.recovery_hash)}
+                             "display_name_next_change": nxt(u.display_name_changed_at, NAME_DAYS), "has_recovery": bool(u.recovery_hash),
+                             "email": u.email, "mail_on": mail_on()}
 
 
 def check_username(v: str) -> str:
@@ -159,11 +162,146 @@ def recover(body: Recover, db: Session = Depends(get_db)):
 
 
 @router.post("/me/recovery")
-def my_recovery(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    """Genera (o cambia) el código de recuperación de la cuenta."""
+def my_recovery(missing: bool = False, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Genera (o cambia) el código de recuperación de la cuenta. missing: solo si aún no tiene (no pisa el que ya guardó)."""
+    if missing and user.recovery_hash:
+        return {"recovery_code": None}
     code = new_recovery(user)
     db.commit()
     return {"recovery_code": code}
+
+
+# ---------- correo de recuperación ----------
+# El correo se guarda recién cuando se abre el enlace de verificación; después sirve para pedir un enlace y poner otra
+# contraseña. Los envía Resend; sin RESEND_API_KEY la opción no aparece en la app.
+PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://faltapp.appscristianrojo.cl")  # fijo: los enlaces no se arman con lo que mande el navegador
+mail_on = lambda: bool(os.environ.get("RESEND_API_KEY"))
+# shortcut: en memoria, igual que FAILS (se borra si Render reinicia o duerme)
+SENT: dict[str, list[float]] = {}
+
+
+def send_mail(to: str, subject: str, text: str) -> None:
+    httpx.post(os.environ.get("RESEND_URL", "https://api.resend.com/emails"), timeout=10,
+               headers={"Authorization": f"Bearer {os.environ['RESEND_API_KEY']}"},
+               json={"from": os.environ.get("MAIL_FROM", "Faltapp <faltapp@appscristianrojo.cl>"), "to": [to],
+                     "subject": subject, "text": text}).raise_for_status()
+
+
+def mail_quietly(to: str, subject: str, text: str) -> None:
+    try:
+        send_mail(to, subject, text)
+    except Exception as e:  # va en segundo plano: quien pidió el enlace ya recibió su respuesta
+        logging.getLogger("faltapp.mail").warning("correo no enviado: %s", e)
+
+
+def allow_mail(key: str) -> bool:
+    """Máximo 3 correos por hora por cuenta y 90 al día entre todas (el plan gratis de Resend da 100 al día)."""
+    t = monotonic()
+    mine = SENT[key] = [x for x in SENT.get(key, []) if t - x < 3600]
+    day = SENT["*"] = [x for x in SENT.get("*", []) if t - x < 86400]
+    if len(mine) >= 3 or len(day) >= 90:
+        return False
+    mine.append(t)
+    day.append(t)
+    return True
+
+
+def need_mail() -> None:
+    if not mail_on():
+        raise HTTPException(503, "La recuperación por correo no está disponible")
+
+
+@router.get("/auth/options")
+def auth_options():
+    return {"mail": mail_on()}
+
+
+class EmailIn(BaseModel):
+    email: str
+
+    @field_validator("email")
+    @classmethod
+    def _email(cls, v: str) -> str:
+        v = v.strip().lower()
+        if len(v) > 254 or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", v):
+            raise ValueError("Ese correo no parece válido")
+        return v
+
+
+@router.put("/me/email")
+def put_email(body: EmailIn, user: User = Depends(current_user)):
+    """Manda el enlace de verificación. No dice si el correo ya está en otra cuenta: eso se ve al abrir el enlace."""
+    need_mail()
+    if not allow_mail(f"u{user.id}"):
+        raise HTTPException(429, "Ya te enviamos varios correos. Revisa tu bandeja (y el spam) o prueba más tarde")
+    link = f"{PUBLIC_URL}/#verificar/{make_link(user.id, 'verify', 24 * 60, email=body.email)}"
+    try:
+        send_mail(body.email, "Confirma tu correo en Faltapp",
+                  f"Hola {user.display_name}:\n\nPara usar este correo como recuperación de tu cuenta @{user.username} en Faltapp, "
+                  f"abre este enlace (vale por 24 horas):\n\n{link}\n\nSi no fuiste tú, ignora este mensaje.")
+    except Exception as e:
+        logging.getLogger("faltapp.mail").warning("correo no enviado: %s", e)
+        raise HTTPException(502, "No pudimos enviar el correo. Prueba más tarde")
+    return {"sent": True}
+
+
+@router.delete("/me/email", status_code=204)
+def delete_email(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    user.email = None
+    db.commit()
+    return Response(status_code=204)
+
+
+class LinkIn(BaseModel):
+    token: str = Field(max_length=2000)
+
+
+@router.post("/auth/verify-email")
+def verify_email(body: LinkIn, db: Session = Depends(get_db)):
+    """Sin sesión: el enlace se abre desde el correo, quizás en otro navegador."""
+    user, data = read_link(body.token, "verify", db)
+    if db.scalar(select(User.id).where(User.email == data["email"], User.id != user.id)):
+        raise HTTPException(409, "Ese correo ya está en otra cuenta")
+    user.email = data["email"]
+    db.commit()
+    return {"email": user.email}
+
+
+# huella de la contraseña actual: el enlace para cambiarla deja de servir apenas cambia (un solo uso)
+pw_mark = lambda u: hashlib.sha256(u.password_hash.encode()).hexdigest()[:16]
+
+
+class ForgotIn(BaseModel):
+    login: str = Field(max_length=254)
+
+
+@router.post("/auth/forgot")
+def forgot(body: ForgotIn, tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Manda al correo verificado el enlace para poner otra contraseña. Responde siempre igual: no delata qué cuentas existen."""
+    need_mail()
+    login = body.login.strip().lower()
+    u = db.scalar(select(User).where((User.email if "@" in login else User.username) == login))
+    if u and u.email and allow_mail(f"u{u.id}"):
+        link = f"{PUBLIC_URL}/#restablecer/{make_link(u.id, 'reset', 30, ph=pw_mark(u))}"
+        tasks.add_task(mail_quietly, u.email, "Cambia tu contraseña de Faltapp",
+                       f"Hola {u.display_name}:\n\nPara poner una contraseña nueva en tu cuenta @{u.username}, abre este enlace "
+                       f"(vale por 30 minutos y sirve una sola vez):\n\n{link}\n\nSi no lo pediste, ignora este mensaje: tu contraseña sigue igual.")
+    return {"ok": True}
+
+
+class ResetIn(LinkIn):
+    password: str = Field(min_length=6, max_length=100)
+
+
+@router.post("/auth/reset")
+def reset(body: ResetIn, db: Session = Depends(get_db)):
+    u, data = read_link(body.token, "reset", db)
+    if not hmac.compare_digest(str(data.get("ph")), pw_mark(u)):
+        raise HTTPException(400, "El enlace no sirve o ya venció. Pide otro")
+    u.password_hash = hash_password(body.password)
+    db.commit()
+    FAILS.pop(f"login:{u.username}", None)
+    return {"token": make_token(u.id)}
 
 
 @router.get("/me")
