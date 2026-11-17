@@ -227,7 +227,25 @@ def main():
                     page.locator("[data-month-next]" if page.locator("[data-date]").first.get_attribute("data-date") < "2026-10" else "[data-month-prev]").click()
             show_day()
             day.click()
+            # antes de marcar se ve cómo queda el ramo con una falta más
+            expect(page.locator("#dlg [data-if-skip]")).to_have_text(re.compile(r"^Si falta(s|ste), te quedan 3 faltas$"))
+            # después de un cambio la pantalla espera al servidor: nunca vuelve a dibujarse con el dato de antes (4)
+            page.evaluate("""() => { window.__q = []; new MutationObserver(() => window.__q.push(document.querySelector("[data-quedan]")?.textContent))
+              .observe(document.querySelector("#view"), { childList: true }); }""")
             page.get_by_role("button", name="Faltar todo el día").click()
+            expect(card.locator("[data-quedan]")).to_have_text("3")
+            assert set(page.evaluate("window.__q")) == {"3"}, page.evaluate("window.__q")
+            # «Deshacer» en el aviso deja el día como estaba, tanto al marcar como al quitar
+            page.get_by_role("button", name="Deshacer", exact=True).click()
+            expect(card.locator("[data-quedan]")).to_have_text("4")
+            day.click()
+            page.get_by_role("button", name="Faltar todo el día").click()
+            expect(card.locator("[data-quedan]")).to_have_text("3")
+            day.click()
+            expect(page.locator("#dlg [data-if-skip]")).to_have_count(0)  # ya está marcada: no hay nada que advertir
+            page.get_by_role("button", name="Quitar faltas").click()
+            expect(card.locator("[data-quedan]")).to_have_text("4")
+            page.get_by_role("button", name="Deshacer", exact=True).last.click()  # el aviso más nuevo (el anterior puede seguir a la vista)
             expect(card.locator("[data-quedan]")).to_have_text("3")
             page.screenshot(path=str(ROOT / "e2e.png"), full_page=True)
 
@@ -310,6 +328,11 @@ def main():
             was = q.get_attribute("aria-pressed") == "true"
             q.click()
             expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("3" if was else "1")
+            if not was:  # recién marcada: «Deshacer» del aviso la quita (exact: el botón de la clase dice "Faltaste · deshacer")
+                imp.get_by_role("button", name="Deshacer", exact=True).click()
+                expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("2")
+                q.click()
+                expect(imp.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")).to_have_text("1")
 
             # progreso del semestre y aviso de "ya puedes faltar a todo" (fecha fija: 1 dic, queda solo el miércoles 2)
             token = imp.evaluate("localStorage.getItem('token')")
@@ -327,6 +350,8 @@ def main():
             expect(bd.locator("[data-pct]")).to_have_text("Asistencia 87% · Justificado 7% · Inasistencia 7%" if was else
                                                          "Asistencia 73% · Justificado 7% · Inasistencia 20%")
             expect(bd.get_by_text("Ya puedes faltar a todas las que quedan")).to_be_visible()
+            # en «¿Fuiste a clases?» cada clase sin marcar dice cómo queda el ramo si faltó
+            expect(dp.locator("[data-quick] [data-if-skip]").first).to_have_text("Si faltaste, te quedan 2 faltas" if was else "Si faltaste, quedas sin margen")
             expect(dp.get_by_text("Ya puedes faltar a todo lo que queda del semestre")).to_be_visible()
             # entre pestañas de la barra la pantalla entra deslizándose desde el lado de la pestaña tocada
             dp.evaluate("location.hash = '#notas'")  # Notas está a la derecha de Inicio
@@ -503,6 +528,45 @@ def main():
                     expect(page.get_by_text("SERVICE WAKING UP")).to_have_count(0)
             finally:
                 page.context.unroute(URL + "/", render)
+            # datos al instante: con copia guardada la pantalla aparece sin esperar al servidor y se actualiza sola
+            hold = """(() => { const f = window.fetch; let go; const gate = new Promise((r) => (go = r)); window.__go = go; window.__calls = [];
+              window.fetch = (u, o) => (String(u).startsWith("/api") ? (window.__calls.push(String(u)), gate.then(() => f(u, o))) : f(u, o)); })()"""
+            tok = page.evaluate("localStorage.getItem('token')")
+            hdr = {"Authorization": "Bearer " + tok}
+            ic = b.new_context(viewport={"width": 390, "height": 844})
+            ip = ic.new_page()
+            ip.on("pageerror", lambda e: errors.append(str(e)))
+            ip.goto(URL)
+            ip.evaluate("t => localStorage.setItem('token', t)", tok)
+            ip.goto(URL + "/?r=1#inicio")
+            iq = ip.locator("[data-course]").filter(has_text="Bases de Datos").locator("[data-quedan]")
+            expect(iq).to_be_visible()
+            n = int(iq.inner_text())
+            assert httpx.post(URL + "/api/absences", headers=hdr, json={"date": "2026-12-02"}).status_code == 200  # falta marcada desde "otro aparato"
+            ip.add_init_script(hold)  # desde ahora, al cargar la página el servidor no responde hasta llamar a __go()
+            ip.reload()
+            expect(iq).to_have_text(str(n), timeout=1000)  # lo guardado, al tiro: no espera al servidor
+            ip.evaluate("window.__go()")
+            expect(iq).to_have_text(str(n - 1))  # llegó la respuesta con la falta nueva: la pantalla se actualiza sola
+            # …y se redibuja con lo recién traído, sin pedirlo otra vez (si no, un dato que cambia siempre la haría recargar sin fin)
+            assert ip.evaluate("window.__calls.filter((u) => u.includes('/summary')).length") == 1, ip.evaluate("window.__calls")
+            # …salvo que ya haya escrito algo: una respuesta distinta no le borra el texto (lo nuevo se ve al volver a la pantalla)
+            ip.evaluate("location.hash = '#perfil'")
+            expect(ip.locator("[data-card]")).to_contain_text("Probando Faltapp")
+            assert httpx.patch(URL + "/api/me", headers=hdr, json={"status": "Desde otro aparato"}).status_code == 200
+            ip.reload()
+            ip.get_by_label("Estado").fill("escribiendo")
+            ip.evaluate("window.__go()")
+            ip.wait_for_function("localStorage.getItem('api:/me').includes('Desde otro aparato')")  # la respuesta ya llegó
+            ip.wait_for_timeout(500)
+            expect(ip.get_by_label("Estado")).to_have_value("escribiendo")
+            ip.evaluate("location.hash = '#inicio'")
+            ip.evaluate("location.hash = '#perfil'")
+            expect(ip.locator("[data-card]")).to_contain_text("Desde otro aparato")
+            assert httpx.patch(URL + "/api/me", headers=hdr, json={"status": "Probando Faltapp"}).status_code == 200  # se deja como estaba
+            assert httpx.request("DELETE", URL + "/api/absences", headers=hdr, json={"date": "2026-12-02"}).status_code == 204
+            ic.close()
+
             # olvidó la contraseña: con usuario + código pone una nueva y recibe otro código
             rc = b.new_context(viewport={"width": 390, "height": 844})
             rp = rc.new_page()
@@ -519,6 +583,14 @@ def main():
             rp.get_by_role("button", name="Ya lo guardé").click()
             rp.wait_for_url("**/#inicio")
             rc.close()
+            # al cambiar la contraseña se cierran las otras sesiones: esta pestaña seguía abierta con la anterior
+            page.reload()
+            expect(page.get_by_text("Tu sesión se cerró")).to_be_visible()
+            page.get_by_label("Usuario").fill("cristian")
+            page.get_by_label("Contraseña").fill("nueva123")
+            page.locator("form").get_by_role("button", name="Entrar").click()
+            page.wait_for_url("**/#inicio")
+            expect(page.locator("[data-progress]")).to_be_visible()
 
             # cuenta de antes (sin código de recuperación): al abrir Faltapp tiene que crearlo; el cuadro no se puede saltar
             tok = httpx.post(URL + "/api/auth/register", json={"username": "antigua", "display_name": "Antigua", "password": "secreto1"}).json()["token"]
@@ -574,6 +646,15 @@ def main():
             expect(vp.locator("[data-progress]")).to_be_visible()
             assert httpx.post(URL + "/api/auth/login", json={"username": "cristian", "password": "porcorreo1"}).status_code == 200
             vc.close()
+            # ese cambio también cierra la sesión de la otra pestaña, y al correo verificado le llega el aviso
+            page.reload()
+            expect(page.get_by_text("Tu sesión se cerró")).to_be_visible()
+            for _ in range(50):  # el aviso sale en segundo plano
+                if any(m["to"] == ["cris@correo.cl"] and m["subject"].startswith("Cambió la contraseña") for m in mails):
+                    break
+                time.sleep(0.1)
+            else:
+                raise AssertionError(f"no llegó el aviso del cambio de contraseña: {[m['subject'] for m in mails]}")
             assert not errors, errors
             sw_takeover(b)
             b.close()

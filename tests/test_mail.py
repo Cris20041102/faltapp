@@ -1,5 +1,6 @@
 """Correo de recuperación: se verifica con un enlace y sirve para poner otra contraseña. No sale nada a internet."""
 import re
+from time import time
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -16,7 +17,6 @@ def mails(monkeypatch):
     out = []
     monkeypatch.setenv("RESEND_API_KEY", "re_prueba")
     monkeypatch.setattr("app.api.send_mail", lambda to, subject, text: out.append((to, subject, text)))
-    monkeypatch.setattr("app.api.SENT", {})
     return out
 
 
@@ -130,9 +130,9 @@ def test_maximo_tres_correos_por_hora_por_cuenta(client, mails):
 
 def test_quitar_el_correo(client, mails):
     h = verified(client, mails, "ana", "ana@correo.cl")
-    n = len(mails)
     assert client.delete("/api/me/email", headers=h).status_code == 204
     assert client.get("/api/me", headers=h).json()["email"] is None
+    n = len(mails)  # después de quitarlo: al quitarlo sale un aviso al correo anterior
     client.post("/api/auth/forgot", json={"login": "ana"})
     assert len(mails) == n
 
@@ -158,7 +158,46 @@ def test_envio_por_resend(monkeypatch):
 
 
 def test_tope_diario_para_no_agotar_el_plan_gratis(client, mails, monkeypatch):
-    from time import monotonic
-    monkeypatch.setattr("app.api.SENT", {"*": [monotonic()] * 90})  # hoy ya salieron 90 correos entre todas las cuentas
+    from app.models import RateLimit
+    with client.db() as db:  # hoy ya salieron 90 correos entre todas las cuentas
+        db.add(RateLimit(key="mail:*", times=[time()] * 90)); db.commit()
     assert client.put("/api/me/email", headers=register(client), json={"email": "a@correo.cl"}).status_code == 429
     assert mails == []
+
+
+def test_cambiar_la_clave_por_correo_cierra_las_otras_sesiones_y_avisa(client, mails):
+    h = verified(client, mails, "ana", "ana@correo.cl")
+    client.post("/api/auth/forgot", json={"login": "ana"})
+    n = len(mails)
+    r = client.post("/api/auth/reset", json={"token": token_in(mails[-1][2], "restablecer"), "password": "nueva123"})
+    assert r.status_code == 200, r.text
+    assert client.get("/api/me", headers=h).status_code == 401  # la sesión abierta con la contraseña anterior ya no vale
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {r.json()['token']}"}).status_code == 200
+    assert len(mails) == n + 1  # el aviso: no trae otro enlace, solo cuenta lo que pasó
+    assert mails[-1][0] == "ana@correo.cl" and "@ana" in mails[-1][2] and "#restablecer/" not in mails[-1][2]
+
+
+def test_recuperar_con_codigo_avisa_al_correo(client, mails):
+    r = client.post("/api/auth/register", json={"username": "ana", "password": "secreto1", "display_name": "Ana"}).json()
+    client.put("/api/me/email", headers={"Authorization": f"Bearer {r['token']}"}, json={"email": "ana@correo.cl"})
+    client.post("/api/auth/verify-email", json={"token": token_in(mails[-1][2], "verificar")})
+    n = len(mails)
+    assert client.post("/api/auth/recover", json={"username": "ana", "code": r["recovery_code"], "password": "nueva123"}).status_code == 200
+    assert len(mails) == n + 1 and mails[-1][0] == "ana@correo.cl" and "@ana" in mails[-1][2]
+
+
+def test_sin_correo_verificado_no_hay_a_quien_avisar(client, mails):
+    r = client.post("/api/auth/register", json={"username": "ana", "password": "secreto1", "display_name": "Ana"}).json()
+    assert client.post("/api/auth/recover", json={"username": "ana", "code": r["recovery_code"], "password": "nueva123"}).status_code == 200
+    assert mails == []
+
+
+def test_cambiar_o_quitar_el_correo_avisa_al_correo_anterior(client, mails):
+    h = verified(client, mails, "ana", "viejo@correo.cl")
+    assert len(mails) == 1  # el primer correo no reemplaza a ninguno: solo salió el enlace de verificación
+    client.put("/api/me/email", headers=h, json={"email": "nuevo@correo.cl"})
+    n = len(mails)
+    client.post("/api/auth/verify-email", json={"token": token_in(mails[-1][2], "verificar")})
+    assert len(mails) == n + 1 and mails[-1][0] == "viejo@correo.cl" and "nuevo@correo.cl" not in mails[-1][2]  # sin delatar el nuevo
+    assert client.delete("/api/me/email", headers=h).status_code == 204
+    assert len(mails) == n + 2 and mails[-1][0] == "nuevo@correo.cl"

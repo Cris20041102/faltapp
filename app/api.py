@@ -1,5 +1,4 @@
 import datetime as dt
-import hashlib
 import hmac
 import logging
 import os
@@ -7,7 +6,7 @@ import re
 import secrets
 from datetime import date, datetime, time, timedelta, timezone
 from typing import Literal
-from time import monotonic
+from time import time as epoch  # "time" ya es datetime.time en este archivo
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -18,11 +17,11 @@ from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from app.auth import current_user, hash_password, make_link, make_token, read_link, verify_password
+from app.auth import current_user, hash_password, make_link, make_token, pw_mark, read_link, verify_password
 from app.horario_uls import parse as parse_horario_uls
 from app import calc, push
 from app.db import get_db
-from app.models import Absence, Course, Event, Friendship, Makeup, NoClassDay, Proposal, ProposalMember, PushSubscription, Semester, Slot, User
+from app.models import Absence, Course, Event, Friendship, Makeup, NoClassDay, Proposal, ProposalMember, PushSubscription, RateLimit, Semester, Slot, User
 
 router = APIRouter(prefix="/api")
 
@@ -93,16 +92,31 @@ class Register(Credentials):
 
 
 # Límite de intentos fallidos por usuario (contraseña o código de recuperación): frena a quien prueba claves al azar.
-# shortcut: vive en la memoria del proceso (se borra si Render reinicia o duerme); pasarlo a la BD si hay varias instancias
-FAILS: dict[str, list[float]] = {}
+# Se guarda en la BD (tabla rate_limits) para que sobreviva cuando Render reinicia o duerme.
 FAIL_WINDOW, FAIL_MAX = 15 * 60, 5
 
 
-def check_attempts(key: str) -> None:
-    t = monotonic()
-    recent = FAILS[key] = [x for x in FAILS.get(key, []) if t - x < FAIL_WINDOW]
-    if len(recent) >= FAIL_MAX:
-        raise HTTPException(429, f"Demasiados intentos. Espera {int(FAIL_WINDOW - (t - recent[0])) // 60 + 1} min y vuelve a probar")
+def recent(db: Session, key: str, window: int) -> list[float]:
+    row = db.get(RateLimit, key)
+    return [t for t in (row.times if row else []) if epoch() - t < window]
+
+
+def record(db: Session, key: str, window: int) -> None:
+    """Anota un intento o envío ahora y poda los vencidos. shortcut: si hay dos a la vez gana el último; con una sola instancia de Render basta."""
+    db.merge(RateLimit(key=key, times=recent(db, key, window) + [epoch()]))
+    db.commit()
+
+
+def clear_limit(db: Session, key: str) -> None:
+    if row := db.get(RateLimit, key):
+        db.delete(row)
+        db.commit()
+
+
+def check_attempts(db: Session, key: str) -> None:
+    t = recent(db, key, FAIL_WINDOW)
+    if len(t) >= FAIL_MAX:
+        raise HTTPException(429, f"Demasiados intentos. Espera {int(FAIL_WINDOW - (epoch() - t[0])) // 60 + 1} min y vuelve a probar")
 
 
 def new_recovery(u: User) -> str:
@@ -120,18 +134,19 @@ def register(body: Register, db: Session = Depends(get_db)):
     code = new_recovery(u)
     db.add(u)
     db.commit()
-    return {"token": make_token(u.id), "recovery_code": code}
+    return {"token": make_token(u), "recovery_code": code}
 
 
 @router.post("/auth/login")
 def login(body: Credentials, db: Session = Depends(get_db)):
-    check_attempts(f"login:{body.username}")
+    key = f"login:{body.username}"[:80]  # el nombre llega sin validar: se recorta al largo de la columna
+    check_attempts(db, key)
     u = db.scalar(select(User).where(User.username == body.username))
     if not u or not verify_password(body.password, u.password_hash):
-        FAILS[f"login:{body.username}"].append(monotonic())
+        record(db, key, FAIL_WINDOW)
         raise HTTPException(401, "Usuario o contraseña incorrectos")
-    FAILS.pop(f"login:{body.username}", None)
-    return {"token": make_token(u.id)}
+    clear_limit(db, key)
+    return {"token": make_token(u)}
 
 
 class Recover(BaseModel):
@@ -146,19 +161,21 @@ class Recover(BaseModel):
 
 
 @router.post("/auth/recover")
-def recover(body: Recover, db: Session = Depends(get_db)):
+def recover(body: Recover, tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Usuario + código de recuperación → contraseña nueva. Entrega un código nuevo: el usado ya no sirve."""
-    check_attempts(f"recover:{body.username}")
+    key = f"recover:{body.username}"[:80]
+    check_attempts(db, key)
     u = db.scalar(select(User).where(User.username == body.username))
     code = re.sub(r"[^A-Z0-9]", "", body.code.upper())
     if not u or not u.recovery_hash or not verify_password(code, u.recovery_hash):
-        FAILS[f"recover:{body.username}"].append(monotonic())
+        record(db, key, FAIL_WINDOW)
         raise HTTPException(401, "Usuario o código incorrectos")
     u.password_hash = hash_password(body.password)
     new = new_recovery(u)
     db.commit()
-    FAILS.pop(f"login:{body.username}", None)
-    return {"token": make_token(u.id), "recovery_code": new}
+    clear_limit(db, f"login:{body.username}"[:80])
+    notify_password(tasks, db, u)
+    return {"token": make_token(u), "recovery_code": new}
 
 
 @router.post("/me/recovery")
@@ -176,8 +193,6 @@ def my_recovery(missing: bool = False, user: User = Depends(current_user), db: S
 # contraseña. Los envía Resend; sin RESEND_API_KEY la opción no aparece en la app.
 PUBLIC_URL = os.environ.get("PUBLIC_URL", "https://faltapp.appscristianrojo.cl")  # fijo: los enlaces no se arman con lo que mande el navegador
 mail_on = lambda: bool(os.environ.get("RESEND_API_KEY"))
-# shortcut: en memoria, igual que FAILS (se borra si Render reinicia o duerme)
-SENT: dict[str, list[float]] = {}
 
 
 def send_mail(to: str, subject: str, text: str) -> None:
@@ -194,16 +209,25 @@ def mail_quietly(to: str, subject: str, text: str) -> None:
         logging.getLogger("faltapp.mail").warning("correo no enviado: %s", e)
 
 
-def allow_mail(key: str) -> bool:
+def allow_mail(db: Session, key: str) -> bool:
     """Máximo 3 correos por hora por cuenta y 90 al día entre todas (el plan gratis de Resend da 100 al día)."""
-    t = monotonic()
-    mine = SENT[key] = [x for x in SENT.get(key, []) if t - x < 3600]
-    day = SENT["*"] = [x for x in SENT.get("*", []) if t - x < 86400]
-    if len(mine) >= 3 or len(day) >= 90:
+    if len(recent(db, f"mail:{key}", 3600)) >= 3 or len(recent(db, "mail:*", 86400)) >= 90:
         return False
-    mine.append(t)
-    day.append(t)
+    record(db, f"mail:{key}", 3600)
+    record(db, "mail:*", 86400)
     return True
+
+
+def notify(tasks: BackgroundTasks, db: Session, u: User, to: str | None, subject: str, text: str) -> None:
+    """Aviso de seguridad al correo verificado, si hay. En segundo plano y sin fallar: lo avisado ya quedó hecho."""
+    if to and mail_on() and allow_mail(db, f"n{u.id}"):
+        tasks.add_task(mail_quietly, to, subject, f"Hola {u.display_name}:\n\n{text}")
+
+
+def notify_password(tasks: BackgroundTasks, db: Session, u: User) -> None:
+    notify(tasks, db, u, u.email, "Cambió la contraseña de tu cuenta de Faltapp",
+           f"La contraseña de tu cuenta @{u.username} se acaba de cambiar y se cerraron las sesiones abiertas en otros aparatos.\n\n"
+           f"Si no fuiste tú, entra a {PUBLIC_URL}, toca «¿Olvidaste tu contraseña?» y pon una nueva con el enlace que llega a este correo.")
 
 
 def need_mail() -> None:
@@ -229,10 +253,10 @@ class EmailIn(BaseModel):
 
 
 @router.put("/me/email")
-def put_email(body: EmailIn, user: User = Depends(current_user)):
+def put_email(body: EmailIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
     """Manda el enlace de verificación. No dice si el correo ya está en otra cuenta: eso se ve al abrir el enlace."""
     need_mail()
-    if not allow_mail(f"u{user.id}"):
+    if not allow_mail(db, f"u{user.id}"):
         raise HTTPException(429, "Ya te enviamos varios correos. Revisa tu bandeja (y el spam) o prueba más tarde")
     link = f"{PUBLIC_URL}/#verificar/{make_link(user.id, 'verify', 24 * 60, email=body.email)}"
     try:
@@ -246,9 +270,12 @@ def put_email(body: EmailIn, user: User = Depends(current_user)):
 
 
 @router.delete("/me/email", status_code=204)
-def delete_email(user: User = Depends(current_user), db: Session = Depends(get_db)):
-    user.email = None
+def delete_email(tasks: BackgroundTasks, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    old, user.email = user.email, None
     db.commit()
+    notify(tasks, db, user, old, "Se quitó el correo de recuperación de tu cuenta de Faltapp",
+           f"Este correo ya no es el de recuperación de tu cuenta @{user.username}: lo quitaron desde el perfil.\n\n"
+           "Si no fuiste tú, entra a Faltapp y vuelve a agregarlo; si no puedes entrar, recupera tu cuenta con tu código de recuperación.")
     return Response(status_code=204)
 
 
@@ -257,18 +284,18 @@ class LinkIn(BaseModel):
 
 
 @router.post("/auth/verify-email")
-def verify_email(body: LinkIn, db: Session = Depends(get_db)):
+def verify_email(body: LinkIn, tasks: BackgroundTasks, db: Session = Depends(get_db)):
     """Sin sesión: el enlace se abre desde el correo, quizás en otro navegador."""
     user, data = read_link(body.token, "verify", db)
     if db.scalar(select(User.id).where(User.email == data["email"], User.id != user.id)):
         raise HTTPException(409, "Ese correo ya está en otra cuenta")
-    user.email = data["email"]
+    old, user.email = user.email, data["email"]
     db.commit()
+    if old != user.email:  # al correo anterior, sin decirle cuál es el nuevo
+        notify(tasks, db, user, old, "Cambió el correo de recuperación de tu cuenta de Faltapp",
+               f"El correo de recuperación de tu cuenta @{user.username} ya no es este: lo cambiaron por otro.\n\n"
+               "Si no fuiste tú, entra a Faltapp y revísalo en tu perfil; si no puedes entrar, recupera tu cuenta con tu código de recuperación.")
     return {"email": user.email}
-
-
-# huella de la contraseña actual: el enlace para cambiarla deja de servir apenas cambia (un solo uso)
-pw_mark = lambda u: hashlib.sha256(u.password_hash.encode()).hexdigest()[:16]
 
 
 class ForgotIn(BaseModel):
@@ -281,7 +308,7 @@ def forgot(body: ForgotIn, tasks: BackgroundTasks, db: Session = Depends(get_db)
     need_mail()
     login = body.login.strip().lower()
     u = db.scalar(select(User).where((User.email if "@" in login else User.username) == login))
-    if u and u.email and allow_mail(f"u{u.id}"):
+    if u and u.email and allow_mail(db, f"u{u.id}"):
         link = f"{PUBLIC_URL}/#restablecer/{make_link(u.id, 'reset', 30, ph=pw_mark(u))}"
         tasks.add_task(mail_quietly, u.email, "Cambia tu contraseña de Faltapp",
                        f"Hola {u.display_name}:\n\nPara poner una contraseña nueva en tu cuenta @{u.username}, abre este enlace "
@@ -294,14 +321,15 @@ class ResetIn(LinkIn):
 
 
 @router.post("/auth/reset")
-def reset(body: ResetIn, db: Session = Depends(get_db)):
-    u, data = read_link(body.token, "reset", db)
+def reset(body: ResetIn, tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    u, data = read_link(body.token, "reset", db)  # "ph": el enlace sirve una sola vez, deja de valer apenas cambia la contraseña
     if not hmac.compare_digest(str(data.get("ph")), pw_mark(u)):
         raise HTTPException(400, "El enlace no sirve o ya venció. Pide otro")
     u.password_hash = hash_password(body.password)
     db.commit()
-    FAILS.pop(f"login:{u.username}", None)
-    return {"token": make_token(u.id)}
+    clear_limit(db, f"login:{u.username}")
+    notify_password(tasks, db, u)
+    return {"token": make_token(u)}
 
 
 @router.get("/me")

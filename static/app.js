@@ -40,19 +40,32 @@ const store = {
 let token = store.get("token");
 let ME = null;
 
-function toast(msg, bad = false) {
+// undo (opcional): función que revierte lo recién hecho; el aviso trae un botón «Deshacer» y dura el doble
+function toast(msg, bad = false, undo) {
   const el = document.createElement("div");
   el.className = `pointer-events-auto max-w-sm rounded-xl px-4 py-2 text-sm font-medium shadow-lg ${bad ? "bg-red-600 text-white" : "border border-white/10 bg-[#1a1030] text-white"}`;
   el.textContent = msg;
+  if (undo) {
+    const b = document.createElement("button");
+    b.className = "pl-5 font-semibold underline";
+    b.textContent = "Deshacer";
+    b.onclick = () => { el.remove(); undo(); };
+    el.append(b);
+  }
   el.classList.add("toast-in");
   $("#toast").append(el);
-  setTimeout(() => { el.classList.add("toast-out"); setTimeout(() => el.remove(), 250); }, 3500);
+  setTimeout(() => { el.classList.add("toast-out"); setTimeout(() => el.remove(), 250); }, undo ? 7000 : 3500);
 }
 
-// Render gratis se duerme tras 15 min: si el servidor tarda, se muestran los datos guardados de la última vez,
-// un aviso de que está despertando, y la pantalla se refresca sola cuando llegan los datos nuevos.
-const SLOW_MS = 2000;
+// Lo que se lee del servidor (GET) queda guardado en el teléfono. Con copia guardada la pantalla aparece al tiro y se
+// actualiza sola si el servidor trae algo distinto. Después de un cambio (POST, PUT, DELETE…) las copias quedan en duda:
+// ahí se espera al servidor hasta SLOW_MS, para no mostrar datos de antes del cambio. Si tarda más (Render gratis se
+// duerme tras 15 min) se muestra lo guardado, con un aviso de que está despertando.
+const SLOW_MS = 2000, FRESH_MS = 5000;
 let pending = 0, slow = false, refreshTimer;
+let gen = 0; // sube con cada cambio enviado al servidor
+let edited = false; // escribió o eligió algo en la pantalla desde que se dibujó
+const fetched = {}; // por cada dato guardado: { gen, at } de la última respuesta del servidor
 function waking(p) {
   pending++;
   const t = setTimeout(() => { slow = true; $("#waking").classList.remove("hidden"); }, SLOW_MS);
@@ -64,15 +77,24 @@ function waking(p) {
 const clearSaved = () => { try { Object.keys(localStorage).filter((k) => k.startsWith("api:")).forEach((k) => localStorage.removeItem(k)); } catch { /* sin storage */ } };
 
 async function api(method, path, body, opts) {
-  const net = waking(request(method, path, body, opts));
   const key = method === "GET" && token ? "api:" + path.replace(/[?&]today=[^&]*/, "") : null; // "today" cambia a diario
-  if (key) net.then((d) => store.set(key, JSON.stringify(d)), () => {});
-  const saved = key && store.get(key);
+  const saved = key && store.get(key), f = key && fetched[key];
+  const synced = (f ? f.gen : 0) === gen; // nada cambió desde que se trajo (o desde que se abrió la app)
+  if (saved && f && synced && Date.now() - f.at < FRESH_MS) return JSON.parse(saved); // recién traído: no se vuelve a pedir
+  if (method !== "GET") gen++;
+  const g = gen, net = waking(request(method, path, body, opts));
+  if (method !== "GET") net.then(() => gen++, () => gen++); // lo pedido mientras el cambio iba en camino tampoco es confiable
+  if (key) net.then((d) => { store.set(key, JSON.stringify(d)); fetched[key] = { gen: g, at: Date.now() }; }, () => {});
   if (!saved) return net;
   const late = Symbol();
-  const first = slow ? late : await Promise.race([net, new Promise((r) => setTimeout(r, SLOW_MS, late))]);
+  const first = synced || slow ? late : await Promise.race([net, new Promise((r) => setTimeout(r, SLOW_MS, late))]);
   if (first !== late) return first;
-  net.then(() => { clearTimeout(refreshTimer); refreshTimer = setTimeout(render, 100); }, () => {});
+  // se muestra lo guardado; si llega algo distinto la pantalla se actualiza sola (salvo que ya haya escrito algo: no se le borra)
+  net.then((d) => {
+    if (JSON.stringify(d) === saved) return;
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => { if (!edited) render(); }, 100);
+  }, () => {});
   return JSON.parse(saved);
 }
 
@@ -82,7 +104,11 @@ async function request(method, path, body, { quiet = false } = {}) {
     headers: { ...(body instanceof Blob ? {} : { "Content-Type": "application/json" }), ...(token ? { Authorization: "Bearer " + token } : {}) },
     body: body instanceof Blob ? body : body ? JSON.stringify(body) : undefined,
   });
-  if (r.status === 401 && !path.startsWith("/auth")) { logout(); throw new Error("Sesión expirada"); }
+  if (r.status === 401 && !path.startsWith("/auth")) {
+    if (token) toast("Tu sesión se cerró. Vuelve a entrar", true); // venció, o cambiaron la contraseña desde otro aparato
+    logout();
+    throw new Error("Sesión expirada");
+  }
   if (r.status === 204) return null;
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -257,7 +283,7 @@ function recoverForm(v) {
     e.preventDefault();
     const { token: t, recovery_code } = await api("POST", "/auth/recover", formData(e.target));
     loginMode = "login";
-    toast("Contraseña cambiada ✓");
+    toast("Contraseña cambiada ✓ Se cerraron tus otras sesiones");
     enter(t, recovery_code);
   };
   // la opción del correo aparece cuando el servidor confirma que puede enviarlos (el formulario del código no espera por eso)
@@ -303,7 +329,7 @@ function restablecer(v, tok) {
   $("form", v).onsubmit = async (e) => {
     e.preventDefault();
     const { token: t } = await api("POST", "/auth/reset", { token: tok, ...formData(e.target) });
-    toast("Contraseña cambiada ✓");
+    toast("Contraseña cambiada ✓ Se cerraron tus otras sesiones");
     enter(t);
   };
 }
@@ -464,6 +490,16 @@ function phoenixItems(rows) {
   return { shares, items };
 }
 
+// antes de marcar una falta: cómo queda el ramo con una más
+const ifSkip = (c, past) => {
+  const n = c.quedan - 1;
+  const tone = n < 0 ? "text-red-600" : n === 0 ? "text-yellow-600" : "text-slate-500";
+  const text = n < 0 ? "repruebas por asistencia" : n === 0 ? "quedas sin margen" : `te quedan ${n} falta${n > 1 ? "s" : ""}`;
+  return `<span data-if-skip class="block text-xs ${tone}">Si ${past ? "faltaste" : "faltas"}, ${text}</span>`;
+};
+// para el «Deshacer» de un aviso: deja las faltas de ese día como estaban
+const undoAbsences = (method, body) => async () => { await api(method, "/absences", body); render(); };
+
 function courseCard(c) {
   const tone = c.quedan < 0 ? "text-red-600" : c.quedan === 0 ? "text-yellow-600" : "text-green-600";
   const msg = c.quedan < 0 ? "Reprobado por asistencia" : c.quedan === 0 ? "Sin margen: no faltes más" : c.quedan === 1 ? "falta disponible" : "faltas disponibles";
@@ -579,7 +615,7 @@ async function inicio(v) {
         <h3 class="mt-3 text-sm font-semibold text-slate-600">${dayLabel(d)}</h3>
         <ul class="mt-1 space-y-2">${slotsOn(s.courses, d).map((x) => `
           <li><button data-quick="${d}" data-slot-id="${x.id}" aria-pressed="${marked.has(x.id)}" class="flex w-full items-center gap-3 rounded-xl border p-3 text-left ${marked.has(x.id) ? "border-indigo-500 bg-indigo-500 text-white" : "border-fg/10 bg-surface"}">
-            <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs opacity-70">${x.c.kind === "L" ? "Lab" : "Teoría"} · ${x.start_time.slice(0, 5)}</span></span>
+            <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs opacity-70">${x.c.kind === "L" ? "Lab" : "Teoría"} · ${x.start_time.slice(0, 5)}</span>${marked.has(x.id) ? "" : ifSkip(x.c, d < today())}</span>
             <span class="text-sm font-semibold">${marked.has(x.id) ? "Faltaste · deshacer" : "Falté"}</span></button></li>`).join("")}
         </ul>`;
         }).join("")}
@@ -605,8 +641,10 @@ async function inicio(v) {
   const careerOff = $("[data-career-dismiss]", v);
   if (careerOff) careerOff.onclick = () => { store.set("career-banner-off", "1"); render(); };
   $$("[data-quick]", v).forEach((b) => (b.onclick = async () => {
-    const r = await api(b.getAttribute("aria-pressed") === "true" ? "DELETE" : "POST", "/absences", { date: b.dataset.quick, slot_ids: [Number(b.dataset.slotId)] });
+    const on = b.getAttribute("aria-pressed") !== "true", body = { date: b.dataset.quick, slot_ids: [Number(b.dataset.slotId)] };
+    const r = await api(on ? "POST" : "DELETE", "/absences", body);
     r?.warnings?.forEach((m) => toast("⚠ " + m));
+    if (on) toast(`Falta marcada en ${$(".font-medium", b).textContent}`, false, undoAbsences("DELETE", body));
     render();
   }));
   $$("[data-tope-go]", v).forEach((b) => (b.onclick = async () => {
@@ -639,7 +677,7 @@ function openDay(s, day) {
       <ul class="mt-2 space-y-2">${slots.map((x) => `
         <li><label class="flex cursor-pointer items-center gap-3 rounded-xl border border-slate-200 p-3">
           <input type="checkbox" data-slot="${x.id}" ${marked.has(x.id) ? "checked" : ""} class="h-5 w-5 accent-indigo-600">
-          <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs text-slate-500">${x.c.kind === "L" ? "Lab" : "Teoría"}</span></span>
+          <span class="flex-1"><span class="font-medium">${esc(x.c.name)}</span> <span class="text-xs text-slate-500">${x.c.kind === "L" ? "Lab" : "Teoría"}</span>${marked.has(x.id) ? "" : ifSkip(x.c, past)}</span>
           <span class="text-xs text-slate-500">${x.start_time}–${x.end_time}</span></label></li>`).join("")}
       </ul>
       <div class="mt-4 grid grid-cols-2 gap-2">
@@ -662,11 +700,24 @@ function openDay(s, day) {
       try {
         warn(await api(cb.checked ? "POST" : "DELETE", "/absences", { date: day, slot_ids: [Number(cb.dataset.slot)] }));
       } catch { cb.checked = !cb.checked; }
+      $$("[data-if-skip]", d).forEach((h) => h.remove()); // se calcularon antes de este cambio
       render();
     }));
     if (slots.length) {
-      $("[data-all]", d).onclick = async () => { warn(await api("POST", "/absences", { date: day })); closeDialog(); render(); };
-      $("[data-none]", d).onclick = async () => { await api("DELETE", "/absences", { date: day }); closeDialog(); render(); };
+      // «Deshacer» deja el día como estaba antes del botón: se mira qué casillas había marcadas en ese momento
+      const ids = (checked) => $$("[data-slot]", d).filter((cb) => cb.checked === checked).map((cb) => Number(cb.dataset.slot));
+      $("[data-all]", d).onclick = async () => {
+        const added = ids(false);
+        warn(await api("POST", "/absences", { date: day }));
+        if (added.length) toast("Día completo marcado como falta", false, undoAbsences("DELETE", { date: day, slot_ids: added }));
+        closeDialog(); render();
+      };
+      $("[data-none]", d).onclick = async () => {
+        const had = ids(true);
+        await api("DELETE", "/absences", { date: day });
+        if (had.length) toast("Faltas del día quitadas", false, undoAbsences("POST", { date: day, slot_ids: had }));
+        closeDialog(); render();
+      };
     }
     const f = $("[data-makeup]", d);
     if (f) { // clases de ese ramo que se pudieron mover a este día, la más cercana primero
@@ -1472,7 +1523,8 @@ async function syncPush() {
   if (pushSynced || !PUSH_OK || Notification.permission !== "granted") return;
   pushSynced = true;
   const sub = await (await navigator.serviceWorker.getRegistration())?.pushManager.getSubscription();
-  if (sub) await api("POST", "/push/subscribe", sub.toJSON(), { quiet: true }).catch(() => {});
+  // request y no api: no cambia ningún dato guardado, así que no los pone en duda
+  if (sub) await request("POST", "/push/subscribe", sub.toJSON(), { quiet: true }).catch(() => {});
 }
 
 const PUSH_CARD = {
@@ -1549,15 +1601,20 @@ async function render() {
   // respuesta al tiro al tocar: la pantalla anterior se corre hacia el otro lado y se desenfoca mientras carga la nueva
   if (changed && shown) { v.classList.remove("leaving", "leaving-l", "leaving-r"); v.classList.add("leaving" + dir); }
   try {
-    if (token && !ME) ME = await api("GET", "/me");
+    if (token) ME = await api("GET", "/me"); // con copia guardada no espera, y así sigue lo que diga el servidor
     $("#hdr").innerHTML = ME ? `<a href="#perfil" class="flex items-center gap-2 opacity-95">${avatar(ME, "sm")}@${esc(ME.username)}</a>` : "";
     // cada pantalla se arma aparte y entra solo si sigue siendo la última pedida: una más lenta no pisa a la nueva
     const box = document.createElement("div");
     await routes[route](box, arg);
     if (seq !== renderSeq || !box.childNodes.length) return; // otra pantalla en camino, o esta redirigió
     v.replaceChildren(box);
+    edited = false;
     if (ME) { refreshBadge(); syncPush(); }
-    if (ME?.has_recovery === false && !$("#dlg").open) requireRecovery(); // === false: una copia guardada de antes no trae el dato
+    // === false: una copia guardada de antes no trae el dato. Y la copia puede ser de antes de crear el código (en este
+    // u otro aparato): se confirma con el servidor antes de exigirlo
+    if (ME?.has_recovery === false && !$("#dlg").open) {
+      request("GET", "/me", null, { quiet: true }).then((me) => { if (me.has_recovery === false && !$("#dlg").open) requireRecovery(); }, () => {});
+    }
   } catch (e) {
     console.warn(e); // el error ya se mostró como toast
   }
@@ -1572,6 +1629,7 @@ async function render() {
   }
 }
 
+$("#view").addEventListener("input", () => { edited = true; });
 addEventListener("hashchange", () => { closeDialog(); render(); });
 render();
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

@@ -33,9 +33,14 @@ def verify_password(pw: str, stored: str) -> bool:
         return False
 
 
-def make_token(user_id: int) -> str:
+def pw_mark(u: User) -> str:
+    """Huella de la contraseña actual: lo firmado con ella (sesiones, enlace para cambiarla) deja de servir apenas cambia."""
+    return hashlib.sha256(u.password_hash.encode()).hexdigest()[:16]
+
+
+def make_token(u: User) -> str:
     exp = datetime.now(timezone.utc) + timedelta(days=30)
-    return jwt.encode({"sub": str(user_id), "exp": exp}, JWT_SECRET, algorithm="HS256")
+    return jwt.encode({"sub": str(u.id), "exp": exp, "pw": pw_mark(u)}, JWT_SECRET, algorithm="HS256")
 
 
 def make_link(user_id: int, use: str, minutes: int, **extra) -> str:
@@ -64,6 +69,8 @@ def current_user(authorization: str = Header(""), db: Session = Depends(get_db))
     except (jwt.PyJWTError, KeyError, ValueError):
         raise HTTPException(401, "Sesión inválida")
     user = db.get(User, uid)
-    if not user:
+    # "pw" distinta: la sesión se abrió con otra contraseña (la cambiaron después), así que ya no vale.
+    # shortcut: las sesiones de antes de este cambio no traen "pw" y valen hasta vencer; a los 30 días de publicado no queda ninguna
+    if not user or ("pw" in data and not hmac.compare_digest(str(data["pw"]), pw_mark(user))):
         raise HTTPException(401, "Sesión inválida")
     return user

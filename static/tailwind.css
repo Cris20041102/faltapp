@@ -38,10 +38,17 @@
 body { padding-bottom: env(safe-area-inset-bottom); }
 button, a { -webkit-tap-highlight-color: transparent; transition: transform .2s var(--ease-ios), background-color .2s, border-color .2s, color .2s; }
 button:not(:disabled):active { transform: scale(.97); }
-/* cambio de pantalla: la anterior se desenfoca mientras carga la nueva, que entra de borrosa a nítida */
-#view { transition: opacity .2s ease-out, filter .2s ease-out; }
-#view.leaving { opacity: .4; filter: blur(6px); }
+/* cambio de pantalla: la anterior se corre y desenfoca al tiro mientras carga la nueva; entre pestañas de la barra
+   la nueva entra desde el lado de la pestaña tocada (-l / -r) y, si no, de borrosa a nítida desde abajo */
+#view { transition: opacity .22s var(--ease-ios), filter .22s var(--ease-ios), transform .22s var(--ease-ios); will-change: opacity, filter, transform; }
+#view.leaving, #view.leaving-l, #view.leaving-r { opacity: .35; filter: blur(6px); }
+#view.leaving-l { transform: translateX(40px); }
+#view.leaving-r { transform: translateX(-40px); }
 #view.entering { animation: enter .45s var(--ease-ios); }
+#view.entering-l { animation: enter-l .35s var(--ease-ios); }
+#view.entering-r { animation: enter-r .35s var(--ease-ios); }
+@keyframes enter-l { from { opacity: 0; filter: blur(8px); transform: translateX(-48px); } }
+@keyframes enter-r { from { opacity: 0; filter: blur(8px); transform: translateX(48px); } }
 @keyframes enter { from { opacity: 0; filter: blur(10px); transform: translateY(8px) scale(.99); } }
 /* diálogos como hoja de iOS: suben con resorte y el fondo se oscurece y desenfoca */
 dialog::backdrop { background: rgb(5 0 12 / .55); backdrop-filter: blur(4px); }
@@ -56,5 +63,5 @@ dialog[open]::backdrop { animation: fade .3s ease-out; }
 /* "Reducir movimiento" del teléfono: sin animaciones */
 @media (prefers-reduced-motion: reduce) {
   *, ::before, ::after, ::backdrop { animation: none !important; transition: none !important; }
-  #view.leaving { opacity: 1; filter: none; }
+  #view.leaving, #view.leaving-l, #view.leaving-r { opacity: 1; filter: none; transform: none; }
 }

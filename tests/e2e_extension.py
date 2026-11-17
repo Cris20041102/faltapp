@@ -18,8 +18,13 @@ READER = APP[APP.index("const hasClass"):APP.index("const READERS")]
 def reopen(sw, imp):
     """Las pestañas que abre una extensión no pasan por ctx.route en su primera carga (queda en error): se vuelve a
     cargar la misma dirección desde Playwright, que sí pasa por la Faltapp simulada. Es la misma pestaña de la extensión."""
-    urls = sw.evaluate("chrome.tabs.query({}).then((ts) => ts.map((t) => t.url))")
-    imp.goto(next(u for u in urls if u and u.startswith(FALTAPP)))
+    for _ in range(50):  # la dirección de la pestaña recién abierta puede tardar un instante en aparecer
+        urls = sw.evaluate("chrome.tabs.query({}).then((ts) => ts.map((t) => t.url || t.pendingUrl))")
+        url = next((u for u in urls if u and u.startswith(FALTAPP)), None)
+        if url:
+            break
+        imp.wait_for_timeout(100)
+    imp.goto(url)
 
 
 def main():
@@ -59,6 +64,10 @@ def main():
         assert read["notas"], "no leyó las notas"
         assert read["carrera"] == "Ingeniería en Computación", read["carrera"]
         imp.wait_for_event("close", timeout=10000)
+        for _ in range(30):  # la insignia se pone justo después del cierre de la pestaña: puede tardar un instante
+            if sw.evaluate("chrome.action.getBadgeText({})") == "✓":
+                break
+            page.wait_for_timeout(100)
         assert sw.evaluate("chrome.action.getBadgeText({})") == "✓"
 
         # 2) otra página de Phoenix al rato: no vuelve a importar (como mucho cada 30 min)

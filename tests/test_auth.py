@@ -102,3 +102,61 @@ def test_codigo_obligatorio_no_pisa_uno_que_ya_existe(client, monkeypatch):
     code = client.post("/api/me/recovery", headers=h, params={"missing": True}).json()["recovery_code"]
     assert client.post("/api/me/recovery", headers=h, params={"missing": True}).json() == {"recovery_code": None}
     assert client.post("/api/auth/recover", json={"username": "cristian", "code": code, "password": "nueva123"}).status_code == 200
+
+
+def test_cambiar_la_clave_cierra_las_otras_sesiones(client):
+    """Quien recupera la cuenta queda dentro con una sesión nueva; las abiertas con la contraseña anterior dejan de valer."""
+    r = client.post("/api/auth/register", json={"username": "ana", "password": "secreto1", "display_name": "Ana"}).json()
+    sesion = lambda t: {"Authorization": f"Bearer {t}"}
+    otra = client.post("/api/auth/login", json={"username": "ana", "password": "secreto1"}).json()["token"]
+    assert client.get("/api/me", headers=sesion(r["token"])).status_code == 200
+    assert client.get("/api/me", headers=sesion(otra)).status_code == 200
+    ok = client.post("/api/auth/recover", json={"username": "ana", "code": r["recovery_code"], "password": "nueva123"})
+    assert ok.status_code == 200, ok.text
+    assert client.get("/api/me", headers=sesion(r["token"])).status_code == 401
+    assert client.get("/api/me", headers=sesion(otra)).status_code == 401
+    assert client.get("/api/me", headers=sesion(ok.json()["token"])).json()["username"] == "ana"  # quien la cambió sigue dentro
+    nueva = client.post("/api/auth/login", json={"username": "ana", "password": "nueva123"}).json()["token"]
+    assert client.get("/api/me", headers=sesion(nueva)).status_code == 200
+
+
+def test_sesiones_de_antes_de_la_huella_siguen_valiendo(client):
+    """Las sesiones abiertas antes de esta mejora no traen la huella de la contraseña: al publicar no se le cierra la sesión a nadie."""
+    from datetime import datetime, timedelta, timezone
+
+    import jwt
+
+    from app.auth import JWT_SECRET
+    uid = client.get("/api/me", headers=register(client, "ana")).json()["id"]
+    antigua = jwt.encode({"sub": str(uid), "exp": datetime.now(timezone.utc) + timedelta(days=1)}, JWT_SECRET, algorithm="HS256")
+    assert client.get("/api/me", headers={"Authorization": f"Bearer {antigua}"}).json()["username"] == "ana"
+
+
+def test_los_intentos_quedan_en_la_bd_y_se_borran_al_entrar(client):
+    from app.models import RateLimit
+    register(client)
+    for _ in range(4):
+        client.post("/api/auth/login", json={"username": "cristian", "password": "mala"})
+    with client.db() as db:
+        assert len(db.get(RateLimit, "login:cristian").times) == 4
+    assert client.post("/api/auth/login", json={"username": "cristian", "password": "secreto1"}).status_code == 200
+    with client.db() as db:
+        assert db.get(RateLimit, "login:cristian") is None  # entró: se limpia
+
+
+def test_intentos_viejos_no_cuentan(client):
+    from time import time
+    from app.models import RateLimit
+    register(client)
+    with client.db() as db:
+        db.add(RateLimit(key="login:cristian", times=[time() - 16 * 60] * 5)); db.commit()
+    assert client.post("/api/auth/login", json={"username": "cristian", "password": "secreto1"}).status_code == 200
+
+
+def test_usuario_larguisimo_no_rompe_el_limite(client):
+    """El nombre llega sin validar: la llave se recorta a 80 (en Postgres una más larga no cabe en la columna y daría 500)."""
+    from app.models import RateLimit
+    largo = "x" * 300
+    assert client.post("/api/auth/login", json={"username": largo, "password": "mala"}).status_code == 401
+    with client.db() as db:
+        assert [len(r.key) for r in db.query(RateLimit).all()] == [80]

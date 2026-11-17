@@ -20,8 +20,9 @@ def client(monkeypatch):
 
     app.dependency_overrides[get_db] = override
     monkeypatch.setattr("app.api.fetch_holidays", lambda country, years: [], raising=False)
-    monkeypatch.setattr("app.api.FAILS", {})  # intentos fallidos de login: cada prueba parte de cero
-    yield TestClient(app)
+    c = TestClient(app)
+    c.db = Session  # para que una prueba pueda mirar o sembrar filas directamente
+    yield c
     app.dependency_overrides.clear()
 
 

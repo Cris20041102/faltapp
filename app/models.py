@@ -166,3 +166,10 @@ class AppSetting(Base):
     __tablename__ = "app_settings"
     key: Mapped[str] = mapped_column(String(40), primary_key=True)
     value: Mapped[str] = mapped_column(Text)
+
+
+class RateLimit(Base):
+    """Marcas de tiempo (epoch) de intentos fallidos y correos recientes, por llave; sobrevive reinicios de Render."""
+    __tablename__ = "rate_limits"
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    times: Mapped[list] = mapped_column(JSON)
