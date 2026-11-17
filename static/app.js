@@ -1131,6 +1131,7 @@ async function propuestas(v, arg) {
           <span class="text-xs text-slate-500">${COLOR[m.color].label} · ${STATUS[m.status]}</span></li>`).join("")}
         </ul>
         ${mine?.status === "pending" ? `<div class="mt-3 grid grid-cols-2 gap-2"><button data-respond="${p.id}" data-accept="1" class="btn-primary">Me sumo</button><button data-respond="${p.id}" class="btn">No puedo</button></div>` : ""}
+        ${p.creator.id === ME.id ? `<button data-del-prop="${p.id}" data-past="${p.date < today() ? 1 : ""}" class="mt-3 w-full text-center text-xs text-red-600">Borrar propuesta</button>` : ""}
       </article>`;
     }).join("") || `<p class="muted text-center">No hay propuestas todavía.</p>`}</section>
     <section class="card mt-4">
@@ -1158,6 +1159,16 @@ async function propuestas(v, arg) {
     location.hash = "#propuestas";
     render();
   };
+  $$("[data-del-prop]", v).forEach((b) => (b.onclick = async () => {
+    if (!b.dataset.sure) {
+      b.dataset.sure = 1;
+      b.textContent = b.dataset.past ? "¿Seguro? Toca de nuevo" : "¿Seguro? Se avisa a los invitados y se quitan las faltas que marcó. Toca de nuevo";
+      return;
+    }
+    await api("DELETE", `/proposals/${b.dataset.delProp}?today=${today()}`);
+    toast("Propuesta borrada");
+    render();
+  }));
   $$("[data-respond]", v).forEach((b) => (b.onclick = async () => {
     const r = await api("POST", `/proposals/${b.dataset.respond}/respond`, { accept: !!b.dataset.accept });
     r.warnings.forEach((m) => toast("⚠ " + m));

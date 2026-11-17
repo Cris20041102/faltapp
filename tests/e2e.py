@@ -622,6 +622,23 @@ def main():
             expect(must).to_have_count(0)  # ya lo tiene: no se le vuelve a pedir
             ac.close()
 
+            # borrar una propuesta: solo quien la creó, y pide confirmar con un segundo toque
+            hc = {"Authorization": "Bearer " + page.evaluate("localStorage.getItem('token')")}
+            amiga = httpx.post(URL + "/api/auth/register", json={"username": "amiga", "display_name": "Amiga", "password": "secreto1"}).json()["token"]
+            assert httpx.post(URL + "/api/friends", headers=hc, json={"username": "amiga"}).status_code == 200
+            yo = httpx.get(URL + "/api/me", headers=hc).json()["id"]
+            assert httpx.post(f"{URL}/api/friends/{yo}/accept", headers={"Authorization": "Bearer " + amiga}).status_code == 200
+            assert httpx.post(URL + "/api/proposals", headers=hc, json={"date": "2027-03-03", "note": "cine", "user_ids": [httpx.get(URL + "/api/me", headers={"Authorization": "Bearer " + amiga}).json()["id"]]}).status_code == 200
+            page.goto(URL + "/?r=1#propuestas")  # carga completa: la propuesta se creó por fuera, la lista guardada no la tiene
+            borrar = page.get_by_role("button", name="Borrar propuesta")
+            borrar.click()
+            expect(page.get_by_role("button", name=re.compile("^¿Seguro?"))).to_contain_text("se quitan las faltas que marcó")
+            expect(page.get_by_text("“cine”")).to_be_visible()  # el primer toque no borra
+            page.get_by_role("button", name=re.compile("^¿Seguro?")).click()
+            expect(page.get_by_text("Propuesta borrada")).to_be_visible()
+            expect(page.get_by_text("No hay propuestas todavía.")).to_be_visible()
+            assert httpx.get(URL + "/api/proposals", headers={"Authorization": "Bearer " + amiga}).json() == []  # se borró para todos
+
             # correo de recuperación: se agrega en el perfil y queda guardado recién al abrir el enlace que llega
             page.goto(URL + "/#perfil")
             page.get_by_label("Correo", exact=True).fill("Cris@correo.cl")

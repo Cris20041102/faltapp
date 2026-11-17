@@ -160,3 +160,62 @@ def test_sugerencias_excluye_pendientes(client):
     assert [u["username"] for u in client.get("/api/friends/suggestions", headers=ha).json()] == ["dani"]
     assert [u["username"] for u in client.get("/api/friends/suggestions", headers=hc).json()] == ["dani"]
     assert {u["username"] for u in client.get("/api/friends/suggestions", headers=hd).json()} == {"ana", "carla"}
+
+
+# ---------- borrar propuestas ----------
+def faltas(client, h, today="2026-09-29"):
+    sid = client.get("/api/semesters", headers=h).json()[0]["id"]
+    return [a["date"] for a in client.get(f"/api/semesters/{sid}/summary", headers=h, params={"today": today}).json()["absences"]]
+
+
+def propuesta_aceptada(client):
+    """ana propone faltar el miércoles 7/10 con beto, y beto se suma: a los dos les quedó marcado ese día."""
+    ha, hb, ida, idb = friends(client)
+    for h in (ha, hb):
+        new_course(client, h, new_semester(client, h)["id"])
+    pid = client.post("/api/proposals", headers=ha, json={"date": "2026-10-07", "user_ids": [idb]}).json()["id"]
+    return ha, hb, pid
+
+
+def test_borrar_propuesta_quita_las_faltas_que_marco(client):
+    ha, hb, pid = propuesta_aceptada(client)
+    client.post(f"/api/proposals/{pid}/respond", headers=hb, json={"accept": True})
+    assert faltas(client, ha) == faltas(client, hb) == ["2026-10-07"]
+    assert client.delete(f"/api/proposals/{pid}", headers=ha, params={"today": "2026-09-29"}).status_code == 204
+    assert faltas(client, ha) == faltas(client, hb) == []
+    assert client.get("/api/proposals", headers=ha).json() == client.get("/api/proposals", headers=hb).json() == []
+
+
+def test_borrar_propuesta_no_quita_faltas_que_ya_estaban(client):
+    ha, hb, pid = propuesta_aceptada(client)
+    client.post("/api/absences", headers=hb, json={"date": "2026-10-07"})  # beto ya pensaba faltar ese día
+    client.post(f"/api/proposals/{pid}/respond", headers=hb, json={"accept": True})
+    client.delete(f"/api/proposals/{pid}", headers=ha, params={"today": "2026-09-29"})
+    assert faltas(client, ha) == [] and faltas(client, hb) == ["2026-10-07"]
+
+
+def test_borrar_propuesta_pasada_deja_las_faltas(client):
+    ha, hb, pid = propuesta_aceptada(client)
+    client.post(f"/api/proposals/{pid}/respond", headers=hb, json={"accept": True})
+    assert client.delete(f"/api/proposals/{pid}", headers=ha, params={"today": "2026-10-08"}).status_code == 204  # ya ocurrió
+    assert faltas(client, ha) == faltas(client, hb) == ["2026-10-07"]
+
+
+def test_propuestas_de_antes_no_saben_que_faltas_marcaron(client):
+    """Las creadas antes de guardar qué marcó cada una: al borrarlas no se toca ninguna falta."""
+    from app.models import ProposalMember
+    ha, hb, pid = propuesta_aceptada(client)
+    with client.db() as db:
+        for m in db.query(ProposalMember).all():
+            m.marked = None
+        db.commit()
+    client.delete(f"/api/proposals/{pid}", headers=ha, params={"today": "2026-09-29"})
+    assert faltas(client, ha) == ["2026-10-07"]
+
+
+def test_solo_quien_la_creo_la_borra(client):
+    ha, hb, pid = propuesta_aceptada(client)
+    r = client.delete(f"/api/proposals/{pid}", headers=hb)
+    assert r.status_code == 403 and r.json()["detail"] == "Solo quien creó la propuesta puede borrarla"
+    assert client.delete(f"/api/proposals/{pid}", headers=register(client, "carla")).status_code == 404
+    assert len(client.get("/api/proposals", headers=ha).json()) == 1

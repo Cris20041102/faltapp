@@ -127,6 +127,8 @@ class ProposalMember(Base):
     proposal_id: Mapped[int] = mapped_column(ForeignKey("proposals.id", ondelete="CASCADE"), primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
     status: Mapped[str] = mapped_column(String(10), default="pending")
+    # bloques que esta propuesta le marcó como falta ese día: si se borra, se quitan solo esos (None: propuesta de antes, no se sabe)
+    marked: Mapped[list | None] = mapped_column(JSON, nullable=True)
 
 
 class Event(Base):

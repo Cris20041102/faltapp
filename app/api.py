@@ -1025,11 +1025,14 @@ def friend_calendar(id: int, today: date = Depends(today_param), user: User = De
 
 
 # ---------- propuestas ----------
-def try_mark_day(db: Session, user: User, d: date) -> list[str]:
+def mark_for_proposal(db: Session, user: User, d: date) -> tuple[list[str], list[int]]:
+    """Marca el día como falta. Devuelve los avisos y los bloques que marcó (los que ya estaban marcados no son de la propuesta)."""
     try:
-        return mark_day(db, user, d, None)
+        ids = [x.id for x in day_slots(db, user, d, None)]
     except HTTPException:  # sin clases ese día: nada que marcar
-        return []
+        return [], []
+    had = set(db.scalars(select(Absence.slot_id).where(Absence.slot_id.in_(ids), Absence.date == d)))
+    return mark_day(db, user, d, None), [i for i in ids if i not in had]
 
 
 class ProposalIn(BaseModel):
@@ -1051,12 +1054,13 @@ def create_proposal(body: ProposalIn, today: date = Depends(today_param), user: 
     ids = set(body.user_ids) - {user.id}
     if not ids or not all(are_friends(db, user.id, i) for i in ids):
         raise HTTPException(404, "Solo puedes invitar a tus amigos")
+    warnings, marked = mark_for_proposal(db, user, body.date)
     p = Proposal(creator_id=user.id, date=body.date, note=body.note,
-                 members=[ProposalMember(user_id=user.id, status="accepted")] + [ProposalMember(user_id=i) for i in ids])
+                 members=[ProposalMember(user_id=user.id, status="accepted", marked=marked)] + [ProposalMember(user_id=i) for i in ids])
     db.add(p)
     db.commit()
     push.notify(db, sorted(ids), f"📅 {user.display_name} te propone faltar el {fecha(body.date)}", body.note or "¿Te sumas?", "/#propuestas")
-    warnings = try_mark_day(db, user, body.date) or prueba_warnings(db, user, body.date)
+    warnings = warnings or prueba_warnings(db, user, body.date)
     for i in sorted(ids):
         u = db.get(User, i)
         if color_on(db, u, body.date, today) == "rojo":
@@ -1082,12 +1086,36 @@ def respond_proposal(id: int, body: RespondIn, user: User = Depends(current_user
     m = db.get(ProposalMember, (id, user.id))
     if not m:
         raise HTTPException(404, "No encontrado")
+    p = db.get(Proposal, id)
+    warnings, m.marked = mark_for_proposal(db, user, p.date) if body.accept else ([], [])
     m.status = "accepted" if body.accept else "rejected"
     db.commit()
-    p = db.get(Proposal, id)
     if body.accept and p.creator_id != user.id:
         push.notify(db, [p.creator_id], f"✅ {user.display_name} se suma a faltar el {fecha(p.date)}", p.note or "Revisa quiénes van.", "/#propuestas")
-    return {"warnings": try_mark_day(db, user, db.get(Proposal, id).date) if body.accept else []}
+    return {"warnings": warnings}
+
+
+@router.delete("/proposals/{id}", status_code=204)
+def delete_proposal(id: int, today: date = Depends(today_param), user: User = Depends(current_user), db: Session = Depends(get_db)):
+    """Solo quien la creó. Se borra para todos, se avisa a quienes no la rechazaron y, si el día aún no pasa, a cada uno se le
+    quitan las faltas que marcó la propuesta (las que ya tenía antes se quedan)."""
+    p = db.get(Proposal, id)
+    if not p or not db.get(ProposalMember, (id, user.id)):
+        raise HTTPException(404, "No encontrado")
+    if p.creator_id != user.id:
+        raise HTTPException(403, "Solo quien creó la propuesta puede borrarla")
+    if p.date >= today:
+        ids = [i for m in p.members for i in (m.marked or [])]
+        if ids:
+            db.execute(delete(Absence).where(Absence.slot_id.in_(ids), Absence.date == p.date))
+    avisar = [m.user_id for m in p.members if m.user_id != user.id and m.status != "rejected"]
+    when, note = p.date, p.note
+    db.delete(p)
+    db.commit()
+    if avisar:
+        push.notify(db, avisar, f"❌ {user.display_name} canceló la propuesta del {fecha(when)}",
+                    "Se quitaron las faltas que marcó para ese día." if when >= today else note or "Ya no va.", "/#propuestas")
+    return Response(status_code=204)
 
 
 # ---------- agenda ----------

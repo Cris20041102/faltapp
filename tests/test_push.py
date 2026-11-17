@@ -69,6 +69,16 @@ def test_avisos_de_amigos_y_propuestas(client, sent):
     assert sent[-1][0] == [EP.format("beto")] and "ana te propone faltar" in sent[-1][1]["title"] and sent[-1][1]["url"] == "/#propuestas"
     client.post(f"/api/proposals/{pid}/respond", headers=hb, json={"accept": True})
     assert sent[-1][0] == [EP.format("ana")] and "beto se suma" in sent[-1][1]["title"]
+    hc = register(client, "carla")
+    subscribe(client, hc, "carla")
+    client.post("/api/friends", headers=ha, json={"username": "carla"})
+    client.post(f"/api/friends/{me(client, ha)['id']}/accept", headers=hc)
+    pid = client.post("/api/proposals", headers=ha, json={"date": "2026-10-16", "user_ids": [me(client, hb)["id"], me(client, hc)["id"]]}).json()["id"]
+    client.post(f"/api/proposals/{pid}/respond", headers=hc, json={"accept": False})
+    n = len(sent)
+    client.delete(f"/api/proposals/{pid}", headers=ha)
+    # el aviso va a quien no la rechazó (beto, aún sin responder); ni a carla (dijo que no) ni a ana (la borró)
+    assert len(sent) == n + 1 and sent[-1][0] == [EP.format("beto")] and "ana canceló la propuesta" in sent[-1][1]["title"]
 
 
 def test_alertas_de_faltas(client, sent):
